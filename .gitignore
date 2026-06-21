@@ -1,0 +1,6 @@
+demo/
+*.md
+*.txt
+*.o
+!README.md
+.*/

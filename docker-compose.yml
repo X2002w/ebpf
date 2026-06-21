@@ -1,0 +1,12 @@
+services:
+  openkylin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: openkylin-dev:latest
+    container_name: openkylin-dev
+    tty: true
+    stdin_open: true
+    volumes:
+      - .:/workspace
+    restart: unless-stopped
