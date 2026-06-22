@@ -4,3 +4,4 @@ demo/
 *.o
 !README.md
 .*/
+ai_test/venv/

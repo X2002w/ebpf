@@ -1,7 +1,9 @@
 // cpu_anomaly.bpf.c — CPU 异常观测 eBPF 内核态
 //
 // 采集 tracepoint:
-//   - sched_switch:           on-CPU 时间, 上下文切换, 调度延迟
+//   - sched_switch:           
+//   on-CPU 时间, 上下文切换, 调度延迟
+//
 //   - sched_wakeup/wakeup_new: wakeup 时间戳, run queue 深度
 //   - sched_stat_wait:        内核直接给出的 runqueue 等待时间
 //   - sched_stat_sleep:       内核直接给出的睡眠时间
@@ -23,7 +25,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 // ─── Per‑PID 聚合统计 ────────────────────────────────────────────
 struct pid_stats {
 	// CPU & 上下文切换 (sched_switch)
-	__u64 on_cpu_ns;
+	__u64 on_cpu_ns;  // 当前进程执行的ns数
 	__u64 cswitch_total;
 	__u64 cswitch_voluntary;   // 主动让出（阻塞/sleep）
 	__u64 cswitch_involuntary; // 被动让出（被抢占）
@@ -53,12 +55,13 @@ struct {
 	__type(value, struct pid_stats);
 } pid_stats SEC(".maps");
 
-// ─── Per‑CPU 当前任务跟踪 ────────────────────────────────────────
+// 记录每个cpu上当前正在运行的任务，以及切入的时间，在sched_switch时实时更新
 struct cpu_task_info {
 	__u32 pid;
 	__u64 ts;   // 切入 CPU 的时间戳
 };
 
+// 每个cpu单独一份，无需考虑并发，用户态单独聚合所有cpu信息
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
 	__uint(max_entries, 1);
@@ -75,6 +78,7 @@ struct {
 } wakeup_ts SEC(".maps");
 
 // ─── 全局 Run Queue 深度 (atomic) ─────────────────────────────────
+// 不太准确
 struct {
 	__uint(type, BPF_MAP_TYPE_ARRAY);
 	__uint(max_entries, 1);
@@ -120,28 +124,38 @@ int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 {
 	__u32 prev_pid = ctx->prev_pid;
 	__u32 next_pid = ctx->next_pid;
+
+  // 获取当前ns时间戳
 	__u64 now = bpf_ktime_get_ns();
 	__u32 zero = 0;
 
+  // 返回map内部value的直接指针，必须进行NULL check，否则BPF verifier 拒绝加载
 	struct cpu_task_info *task = bpf_map_lookup_elem(&cpu_task, &zero);
 	if (!task)
 		return 0;
 
 	// 1) 记录切出进程的 on‑CPU 时间
-	if (task->pid == prev_pid && prev_pid != 0) {
+	if (task->pid == prev_pid && prev_pid != 0) 
+  {
 		__u64 delta = now - task->ts;
 
 		struct pid_stats *s = bpf_map_lookup_elem(&pid_stats, &prev_pid);
-		if (s) {
-			s->on_cpu_ns        += delta;
+    // 当前进程已经出现过，直接进行统计
+		if (s) 
+    {
+			s->on_cpu_ns += delta;
 			s->cswitch_total++;
 			if (ctx->prev_state == TASK_RUNNING)
 				s->cswitch_involuntary++;
 			else
 				s->cswitch_voluntary++;
-		} else {
+		} 
+
+    // pid 首次出现，零值初始化，只填当前事件相关的字段
+    else 
+    {
 			struct pid_stats ns = {};
-			ns.on_cpu_ns   = delta;
+			ns.on_cpu_ns = delta;
 			ns.cswitch_total = 1;
 			if (ctx->prev_state == TASK_RUNNING)
 				ns.cswitch_involuntary = 1;
@@ -149,6 +163,7 @@ int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 				ns.cswitch_voluntary = 1;
 			bpf_map_update_elem(&pid_stats, &prev_pid, &ns, BPF_ANY);
 		}
+
 	}
 
 	// 2) 更新当前 CPU 任务
