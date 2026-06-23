@@ -20,6 +20,7 @@
 #include <linux/perf_event.h>
 #include <sys/syscall.h>
 #include <sys/ioctl.h>
+#include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
 
 // ─── 配置常量 ────────────────────────────────────────────────────
@@ -167,15 +168,6 @@ static void reset_stack_counts(int map_fd)
 	}
 }
 
-// ─── 读取全局 runq 深度 ──────────────────────────────────────────
-static __u64 read_runq_depth(int map_fd)
-{
-	__u32 zero = 0;
-	__u64 val  = 0;
-	bpf_map_lookup_elem(map_fd, &zero, &val);
-	return val;
-}
-
 // ─── CPU% 比较 (降序) ────────────────────────────────────────────
 static int cmp_cpu(const void *a, const void *b)
 {
@@ -228,13 +220,72 @@ static int collect_stacks(int counts_fd, struct stack_entry **out, int *out_coun
 	return 0;
 }
 
+// 调度器检测
+static void check_scheduler_info(struct cpu_anomaly_bpf *skel,
+                                 char *sched_name, size_t name_len,
+                                 char *preempt_model, size_t pm_len,
+                                 int *schedstats_on)
+{
+  // 读取内核版本 -> EEVDF or CFS
+  struct utsname uts;
+  uname(&uts);
+  int major, minor;
+  sscanf(uts.release, "%d.%d", &major, &minor);
+
+  if (major > 6 || (major == 6 && minor >= 6))
+    snprintf(sched_name, name_len, "EEVDF (fair_sched_class)");
+  else
+    snprintf(sched_name, name_len, "CFS (fair_sched_class)");
+
+  // 抢占模型, 从/proc/version 读取
+  *preempt_model = '\0';
+  FILE *f = fopen("/proc/version", "r");
+  if (f)
+  {
+    char line[256];
+    if (fgets(line, sizeof(line), f))
+    {
+      if (strstr(line, "PREEMPT_DYNAMIC"))
+        snprintf(preempt_model, pm_len, "PREEMPT_DYNAMIC");
+      else if (strstr(line, "PREEMPT_RT"))
+        snprintf(preempt_model, pm_len, "PREEMPT_RT");
+      else if (strstr(line, "PREEMPT"))
+        snprintf(preempt_model, pm_len, "PREEMPT (voluntary)");
+    }
+    fclose(f);
+  }
+
+  // 查看schedstats是否启用
+  *schedstats_on = 0;
+  f = fopen("/proc/sys/kernel/sched_schedstats", "r");
+  if (f)
+  {
+    char c = '0';
+    fread(&c, 1, 1, f);
+    if (c == '1')
+      *schedstats_on = 1;
+    fclose(f);
+  }
+
+  // 读取BPF map 确定fair_sched_class 被调用
+  __u32 zero = 0;
+  __u64 fair_count = 0;
+  bpf_map_lookup_elem(bpf_map__fd(skel->maps.sched_class_check), &zero, &fair_count);
+}
+
 // ─── 打印单个时间窗口的文本诊断报告 ────────────────────────────
 static void print_report(FILE *out,
-                         struct proc_info *procs, int count,
-                         __u64 total_interval_ns, __u64 runq_val,
-                         int ncpu, double cpu_threshold,
-                         struct stack_entry *stacks, int stack_count,
-                         __u64 total_stack_samples)
+                         struct proc_info *procs,
+                         int count,
+                         __u64 total_interval_ns,
+                         int ncpu,
+                         double cpu_threshold,
+                         struct stack_entry *stacks,
+                         int stack_count,
+                         __u64 total_stack_samples,
+                         const char *sched_name,
+                         const char *preempt_model,
+                         int schedstats_on)
 {
 	char ts[32];
 	iso_timestamp(ts, sizeof(ts));
@@ -250,9 +301,13 @@ static void print_report(FILE *out,
 	        "  时间: %-30s  采样窗口: %.1fs\n"
 	        "----------------------------------------------------------------------\n"
 	        "  系统概览\n"
-	        "  CPU 核心数: %-4d    当前 RunQ 深度: %-6llu    活跃进程数: %d\n"
+	        "  CPU 核心数: %-4d   活跃进程数: %d\n"
+	        "  调度器: %-24s  抢占模型: %s\n"
+	        "  schedstats: %s\n"
 	        "======================================================================\n\n",
-	        ts, duration_s, ncpu, runq_val, count);
+	        ts, duration_s, ncpu, count,
+	        sched_name, preempt_model,
+	        schedstats_on ? "启用" : "未启用");
 
 	// 按 CPU% 排序
 	qsort(procs, count, sizeof(struct proc_info), cmp_cpu);
@@ -665,7 +720,6 @@ int main(int argc, char **argv)
 	}
 
 	int stats_fd   = bpf_map__fd(skel->maps.pid_stats);
-	int runq_fd    = bpf_map__fd(skel->maps.runq_depth);
 	int scounts_fd = bpf_map__fd(skel->maps.stack_counts);
 
 	fprintf(stderr, "[*] CPU 异常观测已启动, 采样间隔=%ds, CPU 阈值=%.0f%%\n",
@@ -674,13 +728,20 @@ int main(int argc, char **argv)
 	if (profile_enabled)
 		fprintf(stderr, "[*] 栈采样频率: %d Hz\n", profile_hz);
 
+	char     sched_name[64]     = "未知";
+	char     preempt_model[32]  = "未知";
+	int      schedstats_on      = 0;
+	check_scheduler_info(skel, sched_name, sizeof(sched_name),
+	                     preempt_model, sizeof(preempt_model), &schedstats_on);
+	fprintf(stderr, "[*] 调度器: %s, 抢占模型: %s, schedstats: %s\n",
+	        sched_name, preempt_model, schedstats_on ? "启用" : "未启用");
+
 	time_t start = time(NULL);
 
 	while (!exiting) {
 		sleep(interval);
 
 		__u64 interval_ns = (__u64)interval * 1000000000ULL;
-		__u64 runq_val    = read_runq_depth(runq_fd);
 
 		// 收集进程统计
 		struct proc_info *procs = NULL;
@@ -700,9 +761,10 @@ int main(int argc, char **argv)
 		}
 
 		// 输出报告
-		print_report(out, procs, count, interval_ns, runq_val,
+		print_report(out, procs, count, interval_ns, 
 		             ncpu, cpu_threshold,
-		             stacks, stack_count, total_stack_samples);
+		             stacks, stack_count, total_stack_samples,
+		             sched_name, preempt_model, schedstats_on);
 
 		free(procs);
 		free(stacks);

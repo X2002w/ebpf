@@ -17,6 +17,7 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
+#include <bpf/bpf_tracing.h>
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -27,8 +28,12 @@ struct pid_stats {
 	// CPU & 上下文切换 (sched_switch)
 	__u64 on_cpu_ns;  // 当前进程执行的ns数
 	__u64 cswitch_total;
-	__u64 cswitch_voluntary;   // 主动让出（阻塞/sleep）
-	__u64 cswitch_involuntary; // 被动让出（被抢占）
+
+  // 进程切出时，状态为非running -> 主动让出cpu，锁竞争 -> sleep()...
+	__u64 cswitch_voluntary;  
+
+  // 进程切出时，状态仍然时running -> 时间片到期 or 被抢占
+	__u64 cswitch_involuntary; 
 
 	// 调度延迟 (wakeup → sched_switch, 手动计算)
 	__u64 wakeup_count;
@@ -69,6 +74,14 @@ struct {
 	__type(value, struct cpu_task_info);
 } cpu_task SEC(".maps");
 
+// 调度器类型检测, linux 6.6起， 调度器默认为EEVDF
+struct {
+  __uint(type, BPF_MAP_TYPE_ARRAY);
+  __uint(max_entries, 1);
+  __type(key, __u32);
+  __type(value, __u64);
+} sched_class_check SEC(".maps");
+
 // ─── Wakeup 时间戳（用于计算调度延迟） ────────────────────────────
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -76,16 +89,6 @@ struct {
 	__type(key, __u32);    // PID
 	__type(value, __u64);  // wakeup 时间戳
 } wakeup_ts SEC(".maps");
-
-// ─── 全局 Run Queue 深度 (atomic) ─────────────────────────────────
-// 不太准确
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__uint(max_entries, 1);
-	__type(key, __u32);
-	__type(value, __u64);
-} runq_depth SEC(".maps");
-
 // ─── Futex 等待时间戳 (类似 wakeup_ts) ────────────────────────────
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -108,15 +111,6 @@ struct {
 	__type(key, __u32);    // stack_id
 	__type(value, __u64);  // 采样命中次数
 } stack_counts SEC(".maps");
-
-// ─── 辅助: 原子更新 runq ─────────────────────────────────────────
-static __always_inline void runq_add(__s64 delta)
-{
-	__u32 zero = 0;
-	__u64 *val = bpf_map_lookup_elem(&runq_depth, &zero);
-	if (val)
-		__sync_fetch_and_add(val, delta);
-}
 
 // ─── sched_switch ─────────────────────────────────────────────────
 SEC("tp/sched/sched_switch")
@@ -170,14 +164,6 @@ int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 	task->pid = next_pid;
 	task->ts  = now;
 
-	// 3) Run queue 更新: next 出队
-	if (next_pid)
-		runq_add(-1);
-
-	// prev 若仍 runnable (=被抢占), 回流 runq
-	if (prev_pid && ctx->prev_state == TASK_RUNNING)
-		runq_add(1);
-
 	// 4) 计算 next_pid 的调度延迟
 	if (next_pid) {
 		__u64 *wts = bpf_map_lookup_elem(&wakeup_ts, &next_pid);
@@ -206,7 +192,6 @@ int on_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
 
 	__u64 now = bpf_ktime_get_ns();
 	bpf_map_update_elem(&wakeup_ts, &pid, &now, BPF_ANY);
-	runq_add(1);
 
 	struct pid_stats *s = bpf_map_lookup_elem(&pid_stats, &pid);
 	if (s) {
@@ -230,7 +215,6 @@ int on_sched_wakeup_new(struct trace_event_raw_sched_wakeup_template *ctx)
 
 	__u64 now = bpf_ktime_get_ns();
 	bpf_map_update_elem(&wakeup_ts, &pid, &now, BPF_ANY);
-	runq_add(1);
 
 	struct pid_stats ns = {};
 	ns.wakeup_count = 1;
@@ -378,3 +362,14 @@ int on_profile(struct bpf_perf_event_data *ctx)
 
 	return 0;
 }
+
+SEC("kprobe/pick_next_task_fair")
+int BPF_KPROBE(on_pick_next_fair)
+{
+  __u32 zero = 0;
+  __u64 *cnt = bpf_map_lookup_elem(&sched_class_check, &zero);
+  if(cnt)
+    __sync_fetch_and_add(cnt, 1);
+  return 0;
+} 
+
