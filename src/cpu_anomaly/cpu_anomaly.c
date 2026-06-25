@@ -273,6 +273,75 @@ static void check_scheduler_info(struct cpu_anomaly_bpf *skel,
   bpf_map_lookup_elem(bpf_map__fd(skel->maps.sched_class_check), &zero, &fair_count);
 }
 
+// 将 IP 地址解析为模块名+偏移 
+static void resolve_ip(pid_t pid, __u64 ip, char *out_buf, size_t len)
+{
+	char path[64];
+
+  // 根据pid读取 指定map
+	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
+	FILE *f = fopen(path, "r");
+	if (!f) {
+		snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
+		return;
+	}
+
+	char line[512];
+	while (fgets(line, sizeof(line), f)) {
+		unsigned long start, end, offset, inode;
+		char perms[8], name[256] = "";
+		// /proc/pid/maps数据格式: start-end perms offset dev inode [name]
+		int n = sscanf(line, "%lx-%lx %7s %lx %*x:%*x %ld %255s",
+			       &start, &end, perms, &offset, &inode, name);
+		if (n < 3) continue;
+
+		if (ip >= start && ip < end) {
+			// 跳过不可执行区域
+			if (n >= 5 && name[0] != '\0')
+				snprintf(out_buf, len, "%s+0x%llx", name,
+					 (unsigned long long)(ip - start));
+			else if (inode == 0)
+				snprintf(out_buf, len, "[vdso/vvar] 0x%llx",
+					 (unsigned long long)ip);
+			else
+				snprintf(out_buf, len, "[anon:%lx] 0x%llx",
+					 inode, (unsigned long long)ip);
+			fclose(f);
+			return;
+		}
+	}
+	fclose(f);
+	snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
+}
+
+// 输出一条调用栈链路 
+static void print_call_stack(FILE *out, int stackmap_fd, __s32 stack_id,
+			     pid_t resolve_pid, const char *prefix)
+{
+	__u64 ips[127];
+	memset(ips, 0, sizeof(ips));
+
+	if (bpf_map_lookup_elem(stackmap_fd, &stack_id, ips) != 0) {
+		fprintf(out, "%s  (无法读取栈数据)\n", prefix);
+		return;
+	}
+
+	int depth = 0;
+	for (int i = 0; i < 127 && ips[i] != 0; i++)
+		depth++;
+
+	if (depth == 0) {
+		fprintf(out, "%s  (无用户态栈 — 可能为内核线程)\n", prefix);
+		return;
+	}
+
+	for (int i = 0; i < depth; i++) {
+		char sym[256];
+		resolve_ip(resolve_pid, ips[i], sym, sizeof(sym));
+		fprintf(out, "%s  #%-2d  %s\n", prefix, i, sym);
+	}
+}
+
 // ─── 打印单个时间窗口的文本诊断报告 ────────────────────────────
 static void print_report(FILE *out,
                          struct proc_info *procs,
@@ -283,6 +352,7 @@ static void print_report(FILE *out,
                          struct stack_entry *stacks,
                          int stack_count,
                          __u64 total_stack_samples,
+                         int stackmap_fd,
                          const char *sched_name,
                          const char *preempt_model,
                          int schedstats_on)
@@ -321,12 +391,16 @@ static void print_report(FILE *out,
 		        "──────────────────────────────────────────────────────────────────────\n",
 		        total_stack_samples);
 		int top_n = stack_count < 5 ? stack_count : 5;
+		pid_t resolve_pid = (count > 0) ? procs[0].pid : getpid();
 		for (int i = 0; i < top_n; i++) {
-			fprintf(out, "  stack #%d: id=%-6d 采样 %llu 次 (%.1f%%)\n",
+			fprintf(out, "  stack #%d: id=%d  采样 %llu 次 (%.1f%%)\n",
 			        i + 1, stacks[i].stack_id, stacks[i].count,
 			        (double)stacks[i].count / (double)total_stack_samples * 100.0);
+			if (stackmap_fd >= 0)
+				print_call_stack(out, stackmap_fd, stacks[i].stack_id,
+				                 resolve_pid, "    ");
+			fprintf(out, "\n");
 		}
-		fprintf(out, "\n");
 	}
 
 	int seq = 0;
@@ -725,6 +799,7 @@ int main(int argc, char **argv)
 
 	int stats_fd   = bpf_map__fd(skel->maps.pid_stats);
 	int scounts_fd = bpf_map__fd(skel->maps.stack_counts);
+	int stackmap_fd = bpf_map__fd(skel->maps.stackmap);
 
 	fprintf(stderr, "[*] CPU 异常观测已启动, 采样间隔=%ds, CPU 阈值=%.0f%%\n",
 	        interval, cpu_threshold);
@@ -778,9 +853,10 @@ int main(int argc, char **argv)
 		}
 
 		// 输出报告
-		print_report(out, procs, count, interval_ns, 
+		print_report(out, procs, count, interval_ns,
 		             ncpu, cpu_threshold,
 		             stacks, stack_count, total_stack_samples,
+		             stackmap_fd,
 		             sched_name, preempt_model, schedstats_on);
 
 		free(procs);
