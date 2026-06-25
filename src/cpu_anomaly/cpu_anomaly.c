@@ -588,6 +588,7 @@ static void usage(const char *prog)
 		"  -d <秒>           总运行时长，0 表示持续运行（默认: 0）\n"
 		"  -o <文件路径>     输出到文件（默认: 标准输出）\n"
 		"  -p <Hz>           栈采样频率，需要 root（默认: %d, 0=禁用）\n"
+		"  -s, --schedstats  尝试开启内核调度器详细统计 (sched_schedstats)\n"
 		"  --cpu-threshold <%%> CPU 占用异常阈值，百分比（默认: %.0f）\n"
 		"  -h, --help        显示本帮助信息\n"
 		"\n"
@@ -611,17 +612,20 @@ int main(int argc, char **argv)
 
 	static struct option long_opts[] = {
 		{"cpu-threshold", required_argument, 0, 'c'},
+		{"schedstats",    no_argument,       0, 's'},
 		{"help",          no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "i:d:o:p:h", long_opts, NULL)) != -1) {
+	int enable_schedstats = 0;
+	while ((opt = getopt_long(argc, argv, "i:d:o:p:sh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
 		case 'p': profile_hz = atoi(optarg); break;
+		case 's': enable_schedstats = 1; break;
 		case 'c': cpu_threshold = atof(optarg); break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
@@ -728,6 +732,19 @@ int main(int argc, char **argv)
 	if (profile_enabled)
 		fprintf(stderr, "[*] 栈采样频率: %d Hz\n", profile_hz);
 
+	if (enable_schedstats) {
+		FILE *f = fopen("/proc/sys/kernel/sched_schedstats", "w");
+		if (f) {
+			fputc('1', f);
+			fclose(f);
+			fprintf(stderr, "[*] 已开启内核调度器详细统计 (sched_schedstats)\n");
+		} else {
+			fprintf(stderr,
+			        "[!] 无法写入 /proc/sys/kernel/sched_schedstats，请手动执行:\n"
+			        "    echo 1 | sudo tee /proc/sys/kernel/sched_schedstats\n");
+		}
+	}
+
 	char     sched_name[64]     = "未知";
 	char     preempt_model[32]  = "未知";
 	int      schedstats_on      = 0;
@@ -789,6 +806,20 @@ int main(int argc, char **argv)
 		free(pe_fds);
 	}
 
+  if (enable_schedstats) 
+  {
+    // 退出时关闭内核schedstats，防止持续增加内核开销
+    FILE *f = fopen("/proc/sys/kernel/sched_schedstats", "w");
+		if (f) {
+			fputc('0', f);
+			fclose(f);
+			fprintf(stderr, "[*] 已关闭内核调度器详细统计 (sched_schedstats)\n");
+		} else {
+			fprintf(stderr,
+			        "[!] 无法恢复 /proc/sys/kernel/sched_schedstats，请手动执行:\n"
+			        "    echo 0 | sudo tee /proc/sys/kernel/sched_schedstats\n");
+		}
+  }
 	fprintf(stderr, "[*] 正在退出...\n");
 	cpu_anomaly_bpf__destroy(skel);
 	if (output_file) fclose(out);
