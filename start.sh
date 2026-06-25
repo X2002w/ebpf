@@ -55,6 +55,19 @@ else
     check_fail "zlib 未安装 (apt install zlib1g-dev)"
 fi
 
+# 压力测试工具
+echo ""
+echo " 压力测试工具:"
+
+for tool in stress-ng fio; do
+    tpath=$(command -v "$tool" 2>/dev/null || true)
+    if [ -n "$tpath" ]; then
+        check_pass "$tool → $tpath"
+    else
+        check_fail "$tool 未安装 (apt install $tool)"
+    fi
+done
+
 # 统计检查结果
 echo ""
 echo "----------------------------------------"
@@ -63,5 +76,5 @@ echo " 检查完毕: 通过 ${PASS}, 失败 ${FAIL}"
 if [ "$FAIL" -gt 0 ]; then
     echo ""
     echo -e "${RED}存在缺失的依赖，请安装:${NC}"
-    echo "  sudo apt install -y clang libbpf-dev libelf-dev zlib1g-dev make bpftool"
+    echo "  sudo apt install -y clang libbpf-dev libelf-dev zlib1g-dev make bpftool stress-ng"
 fi
