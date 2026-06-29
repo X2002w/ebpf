@@ -7,7 +7,7 @@
 #   4) clang                   → cpu_anomaly (可执行文件)
 
 CLANG   ?= clang
-BPFTOOL ?= /usr/sbin/bpftool
+BPFTOOL ?= $(or $(wildcard /usr/local/sbin/bpftool),$(wildcard /usr/sbin/bpftool),/usr/sbin/bpftool)
 
 ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/' -e 's/riscv64/riscv/')
 
