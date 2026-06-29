@@ -4,6 +4,7 @@ set -euo pipefail
 # 颜色
 RED='\033[0;31m'
 GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
 NC='\033[0m'
 
 PASS=0
@@ -12,47 +13,69 @@ FAIL=0
 check_pass() { echo -e "  ${GREEN}[OK]${NC} $1"; PASS=$((PASS + 1)); }
 check_fail() { echo -e "  ${RED}[FAIL]${NC} $1"; FAIL=$((FAIL + 1)); }
 
+# 尝试安装并重新检查，返回 0=安装成功, 1=仍失败
+try_install() {
+    local pkg="$1"
+    local check_cmd="$2"
+    local label="$3"
+    echo -e "  ${YELLOW}[...]${NC} 尝试安装 $pkg ..."
+    if sudo apt install -y "$pkg" >/dev/null 2>&1; then
+        if eval "$check_cmd"; then
+            check_pass "$label"
+            return 0
+        fi
+    fi
+    check_fail "$label 安装失败"
+    return 1
+}
+
 echo " -------------------------- "
 echo " eBPF 项目依赖检查:"
 
 # 命令行工具
-for tool in clang make bpftool; do
+for tool in clang make; do
     tpath=$(command -v "$tool" 2>/dev/null || true)
-    # bpftool 通常装在 /usr/sbin，非 root PATH 不包含
-    if [ -z "$tpath" ] && [ "$tool" = "bpftool" ]; then
-        for p in /usr/sbin/bpftool /sbin/bpftool; do
-            [ -x "$p" ] && { tpath="$p"; break; }
-        done
-    fi
     if [ -n "$tpath" ]; then
         check_pass "$tool → $tpath"
     else
-        check_fail "$tool 未安装"
+        try_install "$tool" "command -v $tool >/dev/null 2>&1" "$tool → \$(command -v $tool)"
     fi
 done
 
-# 运行时库
-# 直接查找 .so 文件，避免 ldconfig 缓存为空的兼容性问题
-has_lib() {
-    find /usr/lib -maxdepth 4 -name "$1" 2>/dev/null | grep -q .
-}
+# bpftool — 路径特殊，单独处理
+bpftool_path=""
+for p in /usr/sbin/bpftool /sbin/bpftool; do
+    [ -x "$p" ] && { bpftool_path="$p"; break; }
+done
+if [ -z "$bpftool_path" ]; then
+    bpftool_path=$(command -v bpftool 2>/dev/null || true)
+fi
+if [ -n "$bpftool_path" ]; then
+    check_pass "bpftool → $bpftool_path"
+else
+    try_install "bpftool" '[ -x /usr/sbin/bpftool ] || [ -x /sbin/bpftool ] || command -v bpftool >/dev/null 2>&1' "bpftool → /usr/sbin/bpftool"
+fi
 
-if has_lib "libbpf.so*"; then
+# 运行时库
+echo ""
+echo " 运行时库:"
+
+if find /usr/lib -maxdepth 4 -name "libbpf.so*" 2>/dev/null | grep -q .; then
     check_pass "libbpf"
 else
-    check_fail "libbpf 未安装 (apt install libbpf-dev)"
+    try_install "libbpf-dev" 'find /usr/lib -maxdepth 4 -name "libbpf.so*" 2>/dev/null | grep -q .' "libbpf"
 fi
 
-if has_lib "libelf.so*"; then
+if find /usr/lib -maxdepth 4 -name "libelf.so*" 2>/dev/null | grep -q .; then
     check_pass "libelf"
 else
-    check_fail "libelf 未安装 (apt install libelf-dev)"
+    try_install "libelf-dev" 'find /usr/lib -maxdepth 4 -name "libelf.so*" 2>/dev/null | grep -q .' "libelf"
 fi
 
-if has_lib "libz.so*"; then
+if find /usr/lib -maxdepth 4 -name "libz.so*" 2>/dev/null | grep -q .; then
     check_pass "zlib"
 else
-    check_fail "zlib 未安装 (apt install zlib1g-dev)"
+    try_install "zlib1g-dev" 'find /usr/lib -maxdepth 4 -name "libz.so*" 2>/dev/null | grep -q .' "zlib"
 fi
 
 # 压力测试工具
@@ -64,7 +87,7 @@ for tool in stress-ng fio; do
     if [ -n "$tpath" ]; then
         check_pass "$tool → $tpath"
     else
-        check_fail "$tool 未安装 (apt install $tool)"
+        try_install "$tool" "command -v $tool >/dev/null 2>&1" "$tool → \$(command -v $tool)"
     fi
 done
 
@@ -75,6 +98,5 @@ echo " 检查完毕: 通过 ${PASS}, 失败 ${FAIL}"
 
 if [ "$FAIL" -gt 0 ]; then
     echo ""
-    echo -e "${RED}存在缺失的依赖，请安装:${NC}"
-    echo "  sudo apt install -y clang libbpf-dev libelf-dev zlib1g-dev make bpftool stress-ng"
+    echo -e "${RED}仍有缺失的依赖，请手动检查并安装。${NC}"
 fi
