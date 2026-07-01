@@ -3,6 +3,7 @@ demo/
 *.txt
 *.o
 *.swp
+*.json
 !README.md
 .*/
 ai_test/venv/
