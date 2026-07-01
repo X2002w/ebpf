@@ -5,6 +5,7 @@
 //   on-CPU 时间, 上下文切换, 调度延迟
 //
 //   - sched_wakeup/wakeup_new: wakeup 时间戳, run queue 深度
+//   - sched_stat_runtime:     schedstat: 调度器核算的实际执行时间
 //   - sched_stat_wait:        内核直接给出的 runqueue 等待时间
 //   - sched_stat_sleep:       内核直接给出的睡眠时间
 //   - sched_stat_blocked:     内核直接给出的阻塞时间（I/O 等）
@@ -41,6 +42,7 @@ struct pid_stats {
 	__u64 max_sched_delay_ns;
 
 	// sched_stat_* tracepoint 直接给出的时间 (需要 CONFIG_SCHEDSTATS=y)
+  // wait_ns -> 调度延迟
 	__u64 wait_ns;             // 在 runqueue 上等待的时间
 	__u64 sleep_ns;            // 睡眠时间
 	__u64 blocked_ns;          // 阻塞时间（I/O 等）
@@ -51,6 +53,9 @@ struct pid_stats {
 	// futex
 	__u64 futex_wait_ns;       // 等待 futex 的总时间
 	__u64 futex_wait_count;    // futex 等待次数
+
+	// sched_stat_runtime (需要 CONFIG_SCHEDSTATS=y)
+	__u64 cpu_runtime_ns;      // sched_stat 核算的实际执行时间
 };
 
 struct {
@@ -275,6 +280,25 @@ int on_sched_stat_blocked(struct trace_event_raw_sched_stat_template *ctx)
 	} else {
 		struct pid_stats ns = {};
 		ns.blocked_ns = ctx->delay;
+		bpf_map_update_elem(&pid_stats, &pid, &ns, BPF_ANY);
+	}
+	return 0;
+}
+
+// ─── sched_stat_runtime: 调度器核算的实际执行时间 ──────────────────
+SEC("tp/sched/sched_stat_runtime")
+int on_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime *ctx)
+{
+	__u32 pid = ctx->pid;
+	if (pid == 0)
+		return 0;
+
+	struct pid_stats *s = bpf_map_lookup_elem(&pid_stats, &pid);
+	if (s) {
+		s->cpu_runtime_ns += ctx->runtime;
+	} else {
+		struct pid_stats ns = {};
+		ns.cpu_runtime_ns = ctx->runtime;
 		bpf_map_update_elem(&pid_stats, &pid, &ns, BPF_ANY);
 	}
 	return 0;

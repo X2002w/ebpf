@@ -51,6 +51,7 @@ struct pid_stats {
 	unsigned long long migrate_count;
 	unsigned long long futex_wait_ns;
 	unsigned long long futex_wait_count;
+	unsigned long long cpu_runtime_ns;
 };
 
 // ─── 进程信息 ────────────────────────────────────────────────────
@@ -125,7 +126,8 @@ static int collect_procs(int map_fd, struct proc_info **out, int *out_count)
 		}
 
 		if (val.on_cpu_ns == 0 && val.cswitch_total == 0 &&
-		    val.wakeup_count == 0 && val.wait_ns == 0) {
+		    val.wakeup_count == 0 && val.wait_ns == 0 &&
+		    val.cpu_runtime_ns == 0) {
 			key = next_key;
 			continue;
 		}
@@ -373,11 +375,12 @@ static void print_report(FILE *out,
 	        "  系统概览\n"
 	        "  CPU 核心数: %-4d   活跃进程数: %d\n"
 	        "  调度器: %-24s  抢占模型: %s\n"
-	        "  schedstats: %s\n"
+	        "  schedstats: %-12s  CPU 计时: %s\n"
 	        "======================================================================\n\n",
 	        ts, duration_s, ncpu, count,
 	        sched_name, preempt_model,
-	        schedstats_on ? "启用" : "未启用");
+	        schedstats_on ? "启用" : "未启用",
+	        schedstats_on ? "sched_stat_runtime (精确)" : "sched_switch (挂墙)");
 
 	// 按 CPU% 排序
 	qsort(procs, count, sizeof(struct proc_info), cmp_cpu);
@@ -406,7 +409,10 @@ static void print_report(FILE *out,
 	int seq = 0;
 	for (int i = 0; i < count && i < 20; i++) {
 		struct pid_stats *s = &procs[i].stats;
-		double cpu_pct  = (double)s->on_cpu_ns / (double)total_interval_ns * 100.0;
+		// CPU 时间: schedstats 开启时优先用内核核算值，否则 fallback 到挂墙时间
+		__u64 cpu_ns = (schedstats_on && s->cpu_runtime_ns > 0)
+				? s->cpu_runtime_ns : s->on_cpu_ns;
+		double cpu_pct  = (double)cpu_ns / (double)total_interval_ns * 100.0;
 		double cswitch_pm = (s->cswitch_total > 0)
 			? (double)s->cswitch_total / ((double)total_interval_ns / 60e9)
 			: 0;
