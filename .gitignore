@@ -5,6 +5,7 @@ demo/
 *.swp
 *.json
 !README.md
+!ai_test/report.md
 .*/
 ai_test/venv/
 ai_test/api.txt
