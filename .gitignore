@@ -7,3 +7,4 @@ demo/
 !README.md
 .*/
 ai_test/venv/
+ai_test/api.txt
