@@ -160,6 +160,51 @@ static void reset_pid_stats(int map_fd)
 	}
 }
 
+// 系统负载 与 run queue 深度 
+// /proc/loadavg 与 /proc/stat 是 procfs 标准接口，Linux 2.6+ 所有发行版通用
+struct sys_metrics {
+  // 系统 1, 5, 15分钟时的平均负载
+	double load1, load5, load15;
+
+  // 瞬时 run queue 深度 -> 系统正在运行or可运行的进程数
+	int procs_running;    
+
+  // 当前被阻塞的进程数(wait IO)
+	int procs_blocked;    
+};
+
+
+// 读取系统指标
+static int read_sys_metrics(struct sys_metrics *m)
+{
+	memset(m, 0, sizeof(*m));
+
+	FILE *f = fopen("/proc/loadavg", "r");
+	if (f) {
+
+    // 当前运行进程 / 总进程数
+		int running = 0, total = 0;
+		fscanf(f, "%lf %lf %lf %d/%d",
+		       &m->load1, &m->load5, &m->load15,
+		       &running, &total);
+		fclose(f);
+	}
+
+	// /proc/stat 提供更精确的瞬时值
+	f = fopen("/proc/stat", "r");
+	if (f) {
+		char line[128];
+		while (fgets(line, sizeof(line), f)) {
+			if (sscanf(line, "procs_running %d", &m->procs_running) == 1)
+				continue;
+			if (sscanf(line, "procs_blocked %d", &m->procs_blocked) == 1)
+				break;
+		}
+		fclose(f);
+	}
+	return 0;
+}
+
 // ─── 重置 stack_counts map ──────────────────────────────────────
 static void reset_stack_counts(int map_fd)
 {
@@ -344,7 +389,7 @@ static void print_call_stack(FILE *out, int stackmap_fd, __s32 stack_id,
 	}
 }
 
-// ─── 打印单个时间窗口的文本诊断报告 ────────────────────────────
+// 打印单个时间窗口的文本诊断报告 
 static void print_report(FILE *out,
                          struct proc_info *procs,
                          int count,
@@ -363,6 +408,10 @@ static void print_report(FILE *out,
 	iso_timestamp(ts, sizeof(ts));
 	double duration_s = (double)total_interval_ns / 1e9;
 
+	// 读取系统指标
+	struct sys_metrics sys;
+	read_sys_metrics(&sys);
+
 	// ═══════════════════════════════════════════════════════════
 	//  报告头部
 	// ═══════════════════════════════════════════════════════════
@@ -370,14 +419,18 @@ static void print_report(FILE *out,
 	        "======================================================================\n"
 	        "  CPU 异常观测诊断报告\n"
 	        "======================================================================\n"
-	        "  时间: %-30s  采样窗口: %.1fs\n"
+	        "  异常时间窗口: %s  (采样间隔 %.1fs)\n"
 	        "----------------------------------------------------------------------\n"
 	        "  系统概览\n"
 	        "  CPU 核心数: %-4d   活跃进程数: %d\n"
+	        "  系统负载:       1min %.2f   5min %.2f   15min %.2f\n"
+	        "  RunQ 深度信息:    正在运行or可运行的进程数: %d  被阻塞的进程数: %d\n"
 	        "  调度器: %-24s  抢占模型: %s\n"
 	        "  schedstats: %-12s  CPU 计时: %s\n"
 	        "======================================================================\n\n",
 	        ts, duration_s, ncpu, count,
+	        sys.load1, sys.load5, sys.load15,
+	        sys.procs_running, sys.procs_blocked,
 	        sched_name, preempt_model,
 	        schedstats_on ? "启用" : "未启用",
 	        schedstats_on ? "sched_stat_runtime (精确)" : "sched_switch (挂墙)");
@@ -409,6 +462,7 @@ static void print_report(FILE *out,
 	int seq = 0;
 	for (int i = 0; i < count && i < 20; i++) {
 		struct pid_stats *s = &procs[i].stats;
+
 		// CPU 时间: schedstats 开启时优先用内核核算值，否则 fallback 到挂墙时间
 		__u64 cpu_ns = (schedstats_on && s->cpu_runtime_ns > 0)
 				? s->cpu_runtime_ns : s->on_cpu_ns;
@@ -464,6 +518,10 @@ static void print_report(FILE *out,
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
 			         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
 
+			snprintf(evidence[ev_count++], sizeof(evidence[0]),
+		         "系统负载(1min 内平均) %.2f, RunQ 深度 %d, 阻塞 %d",
+		         sys.load1, sys.procs_running, sys.procs_blocked);
+
 			// 1a: 切换极少 + 栈高度集中 → busy loop
 			if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
 			    stack_concentration > STACK_CONC_RATIO) {
@@ -491,6 +549,10 @@ static void print_report(FILE *out,
 				snprintf(evidence[ev_count++], sizeof(evidence[0]),
 				         "被动切换 %.0f/min 占绝对主导 (主动 %.0f/min)，证实 CPU 争抢",
 				         invol_pm, vol_pm);
+				if (sys.load1 > ncpu * 1.5)
+					snprintf(evidence[ev_count++], sizeof(evidence[0]),
+					         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
+					         sys.load1, ncpu);
 			}
 			// 1d: 其他高 CPU
 			else {
@@ -506,6 +568,9 @@ static void print_report(FILE *out,
 		    cswitch_pm > CSWITCH_WARN_PER_MIN) {
 			is_anomaly = 1;
 			subtype = "线程/锁竞争";
+			snprintf(evidence[ev_count++], sizeof(evidence[0]),
+			         "RunQ 深度瞬时 %d, 负载 %.2f — CPU 未饱和但切换频繁",
+			         sys.procs_running, sys.load1);
 			if (s->futex_wait_count > 0) {
 				root_cause = "自愿切换占比高 + futex 等待显著，"
 				             "多线程锁竞争或同步等待";
@@ -696,6 +761,9 @@ static void print_json_report(struct proc_info *procs, int count,
 	iso_timestamp(ts, sizeof(ts));
 	double duration_s = (double)total_interval_ns / 1e9;
 
+	struct sys_metrics sys;
+	read_sys_metrics(&sys);
+
 	qsort(procs, count, sizeof(struct proc_info), cmp_cpu);
 
 	double stack_concentration = 0;
@@ -706,9 +774,13 @@ static void print_json_report(struct proc_info *procs, int count,
 	}
 
 	fprintf(out, "{\n");
-	indent(out, 1); fprintf(out, "\"timestamp\": "); json_escape(out, ts); fprintf(out, ",\n");
+	indent(out, 1); fprintf(out, "\"anomaly_time_window\": "); json_escape(out, ts); fprintf(out, ",\n");
 	indent(out, 1); fprintf(out, "\"duration_s\": %.1f,\n", duration_s);
 	indent(out, 1); fprintf(out, "\"ncpu\": %d,\n", ncpu);
+	indent(out, 1); fprintf(out, "\"system_load\": { \"load1\": %.2f, \"load5\": %.2f, \"load15\": %.2f },\n",
+	       sys.load1, sys.load5, sys.load15);
+	indent(out, 1); fprintf(out, "\"runq_depth\": { \"running\": %d, \"blocked\": %d },\n",
+	       sys.procs_running, sys.procs_blocked);
 	indent(out, 1); fprintf(out, "\"schedstats_on\": %s,\n", schedstats_on ? "true" : "false");
 	indent(out, 1); fprintf(out, "\"cpu_threshold\": %.0f,\n", cpu_threshold);
 	indent(out, 1); fprintf(out, "\"total_procs\": %d,\n", count);
@@ -792,6 +864,7 @@ static void print_json_report(struct proc_info *procs, int count,
 		}
 
 		indent(out, 2); fprintf(out, "{\n");
+		indent(out, 3); fprintf(out, "\"anomaly_time_window\": "); json_escape(out, ts); fprintf(out, ",\n");
 		indent(out, 3); fprintf(out, "\"pid\": %u,\n", procs[i].pid);
 		indent(out, 3); fprintf(out, "\"comm\": "); json_escape(out, procs[i].comm); fprintf(out, ",\n");
 		indent(out, 3); fprintf(out, "\"cpu_pct\": %.1f,\n", cpu_pct);
