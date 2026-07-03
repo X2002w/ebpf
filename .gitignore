@@ -4,8 +4,11 @@ demo/
 *.o
 *.swp
 *.json
-!README.md
-!ai_test/report.md
 .*/
 ai_test/venv/
 ai_test/api.txt
+
+
+!README.md
+!ai_test/report.md
+!src/cpu_anomaly/report/*.md

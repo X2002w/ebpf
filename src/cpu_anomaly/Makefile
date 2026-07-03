@@ -13,7 +13,8 @@ ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/' -e 's/ri
 
 APP      := cpu_anomaly
 CFLAGS   := -g -O2 -Wall
-INCLUDES := -I.
+INCLUDES := -I. -I..
+SRCS     := $(APP).c ../report_md.c
 LDLIBS   := -lbpf -lelf -lz
 
 .PHONY: all clean
@@ -28,8 +29,8 @@ $(APP).bpf.o: $(APP).bpf.c vmlinux.h
 $(APP).skel.h: $(APP).bpf.o
 	$(BPFTOOL) gen skeleton $< > $@
 
-$(APP): $(APP).c $(APP).skel.h
-	$(CLANG) $(CFLAGS) $(INCLUDES) $(APP).c $(LDLIBS) -o $@
+$(APP): $(APP).c $(APP).skel.h ../report_md.h
+	$(CLANG) $(CFLAGS) $(INCLUDES) $(SRCS) $(LDLIBS) -o $@
 
 clean:
 	rm -f $(APP) $(APP).bpf.o $(APP).skel.h vmlinux.h

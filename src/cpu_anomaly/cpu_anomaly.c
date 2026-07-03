@@ -22,6 +22,7 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
+#include "../report_md.h"
 
 // ─── 配置常量 ────────────────────────────────────────────────────
 #define DEFAULT_INTERVAL      5       // 采样间隔 (秒)
@@ -1124,6 +1125,14 @@ int main(int argc, char **argv)
 				  stacks, stack_count, total_stack_samples,
 				  schedstats_on);
 	}
+
+	/* 默认输出 Markdown 报告到 report/ 目录 */
+	print_markdown_report(NULL, procs, count, interval_ns,
+			      ncpu, cpu_threshold,
+			      stacks, stack_count, total_stack_samples,
+			      stackmap_fd,
+			      sched_name, preempt_model, schedstats_on);
+
 		free(procs);
 		free(stacks);
 
