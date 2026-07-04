@@ -24,7 +24,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define TASK_RUNNING 0
 
-// ─── Per‑PID 聚合统计 ────────────────────────────────────────────
+// Per‑PID 聚合统计 
 struct pid_stats {
 	// CPU & 上下文切换 (sched_switch)
 	__u64 on_cpu_ns;  // 当前进程执行的ns数
@@ -266,7 +266,9 @@ int on_sched_stat_sleep(struct trace_event_raw_sched_stat_template *ctx)
 	return 0;
 }
 
-// ─── sched_stat_blocked: 内核直接给出的阻塞时间 ────────────────────
+// 当一个进程被调度器换出时，记录此即将离开cpu的进程在运行期间经历的阻塞时间
+// sched_stat_blocked: 锁竞争 + IO类同步阻塞
+// sched_stat_iowait: 仅I/O操作造成的阻塞
 SEC("tp/sched/sched_stat_blocked")
 int on_sched_stat_blocked(struct trace_event_raw_sched_stat_template *ctx)
 {
