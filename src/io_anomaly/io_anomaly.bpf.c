@@ -3,6 +3,7 @@
 #include "vmlinux.h" 
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -53,7 +54,7 @@ struct {
   __uint(type, BPF_MAP_TYPE_HASH);
   __uint(max_entires, 1);
   __type(key, struct request *);
-  __type(valude, io_req_info);
+  __type(value, struct io_req_info);
 } io_req SEC(".maps");
 
 // block_rq_insert
@@ -64,13 +65,13 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
   if(!rq) return 0;
 
   // 通过rq -> part -> bd_dev直接拿取设备号, 跳两次
-  dev_t dev = BPF_READ_CORE(rq, part, bd_dev); 
+  dev_t dev = BPF_CORE_READ(rq, part, bd_dev); 
 
   // 读取总扇区数: 总字节数 / 512
-  unsigned int nr_sector = BPF_READ_CORE(rq, __data_len) >> 9;
+  unsigned int nr_sector = BPF_CORE_READ(rq, __data_len) >> 9;
 
   // cmd_flags[24标志位 | 8操作码]
-  unsigned int cmd_flags = BPF_READ_CORE(rq, cmd_flags); 
+  unsigned int cmd_flags = BPF_CORE_READ(rq, cmd_flags); 
   char rw = ((cmd_flags & CMD_FLAGS_MAEK) == 1) ? 1 : 0;
 
   struct io_req_info info = {};
@@ -97,6 +98,18 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
   return 0;
 }
 
+// block_rq_issue
+SEC("raw_tp/block_rq_issue");
+int on_block_rq_issue(struct bpf_raw_tracepoint_args *ctx) {
+  struct request *rq = (struct request *)ctx->args[0];
+  if (!rq) return 0;
+
+  struct io_req_info *info = bpf_map_lookup_elem(&io_req, &rq);
+  if (!info) return 0;
+
+  info->issue_ts = bpf_ktime_get_ns();
+  return 0;
+}
 
 // block_rq_complete
 // vmlinux -> 113658
@@ -130,7 +143,8 @@ int on_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx)
     __sync_fetch_and_add(&s->wr_count, 1);
     __sync_fetch_and_add(&s->wr_bytes, bytes);
   }
-
+  
+  return 0;
 }
 
 
