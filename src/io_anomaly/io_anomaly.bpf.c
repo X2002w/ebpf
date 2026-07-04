@@ -48,7 +48,7 @@ struct io_req_info {
   __u64 issue_ts;   
   dev_t dev;        // dev设备号
   unsigned int  nr_sector;    // 读写扇区数量
-  char rw;          // 读 or 写
+  __u8 rw;          // 读 or 写
 };
 
 struct {
@@ -57,6 +57,22 @@ struct {
   __type(key, struct request *);
   __type(value, struct io_req_info);
 } io_req SEC(".maps");
+
+
+// 获取struct dev_stats
+static inline struct dev_stats *get_dev_stats(dev_t dev)
+{
+  struct dev_stats *s = bpf_map_lookup_elem(&dev_stats, &dev);
+  if (!s) {
+    struct dev_stats zero = {};
+    bpf_map_update_elem(&dev_stats, &dev, &zero, BPF_ANY);
+    s = bpf_map_lookup_elem(&dev_stats, &dev);
+    if (!s) return 0;
+  }
+  return s;
+}
+
+
 
 // block_rq_insert
 SEC("raw_tp/block_rq_insert")
@@ -73,7 +89,7 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
 
   // cmd_flags[24标志位 | 8操作码]
   unsigned int cmd_flags = BPF_CORE_READ(rq, cmd_flags); 
-  char rw = ((cmd_flags & CMD_FLAGS_MAEK) == 1) ? 1 : 0;
+  __u8 rw = ((cmd_flags & CMD_FLAGS_MAEK) == 1) ? 1 : 0;
 
   struct io_req_info info = {};
   info.insert_ts = bpf_ktime_get_ns();
@@ -82,14 +98,7 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
   info.rw = rw;
   bpf_map_update_elem(&io_req, &rq, &info, BPF_ANY);
 
-  struct dev_stats *s = bpf_map_lookup_elem(&dev_stats, &dev);
-  if (!s) {
-    struct dev_stats zero = {};
-    bpf_map_update_elem(&dev_stats, &dev, &zero, BPF_ANY);
-    s = bpf_map_lookup_elem(&dev_stats, &dev);
-    if (!s) return 0;
-  }
-
+  struct dev_stats *s = get_dev_stats(dev);
   if (s) {
     __sync_fetch_and_add(&s->qdepth_cur, 1);
     if (s->qdepth_cur > s->qdepth_max)
@@ -134,14 +143,7 @@ int on_block_rq_complete(struct bpf_raw_tracepoint_args *ctx)
 
   __u64 bytes = (__u64)info->nr_sector * 512;
 
-  struct dev_stats *s = bpf_map_lookup_elem(&dev_stats, &info->dev);
-  if (!s) {
-    struct dev_stats zero = {};
-    bpf_map_update_elem(&dev_stats, &info->dev, &zero, BPF_ANY);
-    s = bpf_map_lookup_elem(&dev_stats, &info->dev);
-    if (!s) return 0;
-  }
-
+  struct dev_stats *s = get_dev_stats(info->dev);
   if (s) {
     if(info->rw) {
       __sync_fetch_and_add(&s->wr_count, 1);
