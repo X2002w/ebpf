@@ -1,4 +1,4 @@
-// io_anomaly.bof.c - io 抖动异常检测 kernel 态
+// io_anomaly.bpf.c - io 抖动异常检测 kernel 态
 
 #include "vmlinux.h" 
 #include <bpf/bpf_helpers.h>
@@ -21,8 +21,9 @@ struct dev_stats {
 
   // 延迟
   __u64 total_lat_ns;   // arg latency = total / 采样时间
+  __u64 total_qwait_ns;
+  __u64 total_svc_ns;
   __u64 max_lat_ns;
-  __u64 lat_samples; 
 
   // 块设备队列深度
   // insert+, complete-
@@ -52,13 +53,13 @@ struct io_req_info {
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
-  __uint(max_entires, 1);
+  __uint(max_entries, 65536);
   __type(key, struct request *);
   __type(value, struct io_req_info);
 } io_req SEC(".maps");
 
 // block_rq_insert
-SEC("raw_tp/block_rq_insert");
+SEC("raw_tp/block_rq_insert")
 int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
 {
   struct request *rq = (struct request *)ctx->args[0];
@@ -99,8 +100,9 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
 }
 
 // block_rq_issue
-SEC("raw_tp/block_rq_issue");
-int on_block_rq_issue(struct bpf_raw_tracepoint_args *ctx) {
+SEC("raw_tp/block_rq_issue")
+int on_block_rq_issue(struct bpf_raw_tracepoint_args *ctx) 
+{
   struct request *rq = (struct request *)ctx->args[0];
   if (!rq) return 0;
 
@@ -112,40 +114,58 @@ int on_block_rq_issue(struct bpf_raw_tracepoint_args *ctx) {
 }
 
 // block_rq_complete
-// vmlinux -> 113658
-SEC("tp/block/blocke_rq_complete");
-int on_block_rq_complete(struct trace_event_raw_block_rq_completion *ctx)
+SEC("raw_tp/block_rq_complete")
+int on_block_rq_complete(struct bpf_raw_tracepoint_args *ctx) 
 {
-  // 查找设备号
-  dev_t dev = ctx->dev;
-  struct dev_stats *s = bpf_map_lookup_elem(&dev_stats, &dev);
+  struct request *rq = (struct request *)ctx->args[0];
+  if (!rq) return 0;
 
-  // 第一次出现, 添加到map中
-  if (!s)
-  {
+  struct io_req_info *info = bpf_map_lookup_elem(&io_req, &rq);
+  if (!info) return 0;
+
+  __u64 now = bpf_ktime_get_ns();
+  __u64 total_lat = now - info->insert_ts;
+  __u64 qwait = 0;
+  __u64 svc = total_lat;
+  if (info->issue_ts > 0 && info->issue_ts >= info->insert_ts) {
+    qwait = info->issue_ts - info->insert_ts;
+    svc = now - info->issue_ts;
+  }
+
+  __u64 bytes = (__u64)info->nr_sector * 512;
+
+  struct dev_stats *s = bpf_map_lookup_elem(&dev_stats, &info->dev);
+  if (!s) {
     struct dev_stats zero = {};
-    bpf_map_update_elem(&dev_stats, &dev, &zero, BPF_ANY);
-    s = bpf_map_lookup_elem(&dev_stats, &dev);
+    bpf_map_update_elem(&dev_stats, &info->dev, &zero, BPF_ANY);
+    s = bpf_map_lookup_elem(&dev_stats, &info->dev);
     if (!s) return 0;
   }
-  
-  // 计算字节数 = 扇区数 * 区块字节数
-  __u64 bytes = (__u64)ctx->nr_sector * 512;
-  
-  // read or write
-  if (ctx->rwbs[0] == 'R')
-  {
-    __sync_fetch_and_add(&s->rd_count, 1);
-    __sync_fetch_and_add(&s->rd_bytes, bytes);
+
+  if (s) {
+    if(info->rw) {
+      __sync_fetch_and_add(&s->wr_count, 1);
+      __sync_fetch_and_add(&s->wr_bytes, bytes);
+    }
+    else {
+      __sync_fetch_and_add(&s->rd_count, 1);
+      __sync_fetch_and_add(&s->rd_bytes, bytes);
+    }
+
+    __sync_fetch_and_add(&s->total_lat_ns, total_lat);
+    __sync_fetch_and_add(&s->total_qwait_ns, qwait);
+    __sync_fetch_and_add(&s->total_svc_ns, svc);
+
+    if (total_lat > s->max_lat_ns)
+      s->max_lat_ns = total_lat;
+
+    if (s->qdepth_cur > 0)
+      __sync_fetch_and_sub(&s->qdepth_cur, 1);
   }
-  else if (ctx->rwbs[0] == 'W')
-  {
-    __sync_fetch_and_add(&s->wr_count, 1);
-    __sync_fetch_and_add(&s->wr_bytes, bytes);
-  }
-  
+
+  // 一次io请求完成后，清除当前条目
+  bpf_map_delete_elem(&io_req, &rq);
+
   return 0;
 }
-
-
 
