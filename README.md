@@ -9,4 +9,6 @@
 - [ ] 添加confige文件，存储用户在使用cli工具使得配置信息
 - [ ] dev_stats dev_t作为map key, 在设备移除后，map条目变为僵尸数据，主动清理(/proc/partitions)读取设备列表
 - [ ] 设备号 dev_t 使用两条路径拿取(rq->part->bd_dev) or (rq->q->disk->major / first_minor)
+- [ ] 使用另外的fio测试命令，原测试命令体现不出io异常
+- [ ] 考虑去除ii_qdepth
 
