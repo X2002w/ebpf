@@ -8,7 +8,7 @@
 #include <signal.h>
 #include <time.h>
 #include <getopt.h>
-#include <sys/sysmacros.h>
+
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "io_anomaly.skel.h"
@@ -74,8 +74,9 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		seq++;
 
 		__u32 dev = next_key;
-		unsigned int maj = major(dev);
-		unsigned int min = minor(dev);
+		// 内核 dev_t 为 32 位: major=bits[20:31], minor=bits[0:19]
+		unsigned int maj = dev >> 20;
+		unsigned int min = dev & 0xFFFFF;
 
 		unsigned long long total_ios = val.rd_count + val.wr_count;
 		double iops = (double)total_ios / interval_s;
