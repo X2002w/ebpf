@@ -25,8 +25,10 @@ struct dev_stats {
 	unsigned long long total_qwait_ns;
 	unsigned long long total_svc_ns;
 	unsigned long long max_lat_ns;
-	unsigned long long qdepth_cur;
-	unsigned long long qdepth_max;
+  unsigned long long ii_qdepth_cur;
+  unsigned long long ic_qdepth_cur;
+  unsigned long long ii_qdepth_max;
+  unsigned long long ic_qdepth_max;
 };
 
 static volatile sig_atomic_t exiting;
@@ -90,6 +92,13 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			? (double)val.total_svc_ns / (double)total_ios / 1000.0 : 0;
 		double max_lat_us = (double)val.max_lat_ns / 1000.0;
 
+    // 读取内核支持的最大io处理积压深度
+    int kernel_dqpth_max = 0;
+    FILE *f = fopen("/sys/block/sda/queue/nr_requests", "r");
+    if (f)
+      fscanf(f, "%d", &kernel_dqpth_max);
+    fclose(f);
+
 		fprintf(out,
 			"──────────────────────────────────────────────────────────────────────\n"
 			"  [%d] 设备 %u:%u  (dev=%u)\n"
@@ -103,15 +112,22 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			"    平均排队等待: %7.1f us\n"
 			"    平均服务时间: %7.1f us\n"
 			"    最大延迟:     %7.1f us\n\n"
-			"  队列深度:\n"
+			"  io请求队列深度:\n"
 			"    当前瞬时值: %llu\n"
-			"    窗口峰值:   %llu\n\n",
+			"    窗口峰值:   %llu\n\n"
+      "  io处理积压队列深度:\n"
+      "    当前瞬时值: %llu\n"
+      "    窗口峰值:   %llu\n"
+      "  当前内核支持的最大积压队列深度: %d\n",
 			seq, maj, min, dev,
 			val.rd_count, rd_mbps,
 			val.wr_count, wr_mbps,
 			iops,
 			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us,
-			val.qdepth_cur, val.qdepth_max);
+			val.ii_qdepth_cur, val.ii_qdepth_max,
+      val.ic_qdepth_cur, val.ic_qdepth_max,
+      kernel_dqpth_max);
+
 
 		key = next_key;
 	}
@@ -120,8 +136,9 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		fprintf(out, "  (未采集到 I/O 数据 — 请确认系统有磁盘活动)\n\n");
 
 	// 显示残留的 in-flight 请求数（调试用）
+  // bio 存在合并, 此处有大量条目处于泄露状态
 	int in_flight = 0;
-	__u32 rkey = 0, rnext;
+	__u64 rkey = 0, rnext;
 	while (bpf_map_get_next_key(req_fd, &rkey, &rnext) == 0) {
 		in_flight++;
 		rkey = rnext;

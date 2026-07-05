@@ -26,9 +26,12 @@ struct dev_stats {
   __u64 max_lat_ns;
 
   // 块设备队列深度
-  // insert+, complete-
-  __u64 qdepth_cur;   // 当前瞬时值
-  __u64 qdepth_max;   // 当前窗口峰值
+  // 分为insert->issue, issue->complete两个阶段
+  __u64 ii_qdepth_cur;
+  __u64 ic_qdepth_cur;
+
+  __u64 ii_qdepth_max;
+  __u64 ic_qdepth_max;
 
   // 所属进程？
 
@@ -100,9 +103,9 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
 
   struct dev_stats *s = get_dev_stats(dev);
   if (s) {
-    __sync_fetch_and_add(&s->qdepth_cur, 1);
-    if (s->qdepth_cur > s->qdepth_max)
-      s->qdepth_max = s->qdepth_cur;
+    __sync_fetch_and_add(&s->ii_qdepth_cur, 1);
+    if (s->ii_qdepth_cur > s->ii_qdepth_max)
+      s->ii_qdepth_max = s->ii_qdepth_cur;
   }
 
   return 0;
@@ -119,6 +122,16 @@ int on_block_rq_issue(struct bpf_raw_tracepoint_args *ctx)
   if (!info) return 0;
 
   info->issue_ts = bpf_ktime_get_ns();
+
+  struct dev_stats *s = get_dev_stats(info->dev);
+  if (s) {
+    if (s->ii_qdepth_cur > 0)
+      __sync_fetch_and_sub(&s->ii_qdepth_cur, 1);
+
+    __sync_fetch_and_add(&s->ic_qdepth_cur, 1);
+    if (s->ic_qdepth_cur > s->ic_qdepth_max)
+      s->ic_qdepth_max = s->ic_qdepth_cur;
+  }
   return 0;
 }
 
@@ -161,8 +174,8 @@ int on_block_rq_complete(struct bpf_raw_tracepoint_args *ctx)
     if (total_lat > s->max_lat_ns)
       s->max_lat_ns = total_lat;
 
-    if (s->qdepth_cur > 0)
-      __sync_fetch_and_sub(&s->qdepth_cur, 1);
+    if (s->ic_qdepth_cur > 0)
+      __sync_fetch_and_sub(&s->ic_qdepth_cur, 1);
   }
 
   // 一次io请求完成后，清除当前条目
