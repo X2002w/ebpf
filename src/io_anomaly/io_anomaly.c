@@ -14,6 +14,7 @@
 #include "io_anomaly.skel.h"
 
 #define DEFAULT_INTERVAL 3
+#define MAX_ACTIVE_DEVS 256
 
 // 与 BPF 侧 struct dev_stats 保持一致的统计结构
 struct dev_stats {
@@ -43,6 +44,37 @@ static void iso_timestamp(char *buf, size_t len)
 	strftime(buf, len, "%Y-%m-%dT%H:%M:%S", &tm);
 }
 
+
+// 读取 /proc/partitions 获取当前活跃块设备列表，转为 dev_t 数组
+static int get_active_devs(__u32 *devs, int max_devs)
+{
+	FILE *f = fopen("/proc/partitions", "r");
+	if (!f) return 0;
+
+	char line[256];
+	int count = 0;
+
+	fgets(line, sizeof(line), f); // 跳过表头
+	fgets(line, sizeof(line), f); // 跳过空行
+
+	while (fgets(line, sizeof(line), f) && count < max_devs) {
+		unsigned int maj, min;
+		char name[64];
+		if (sscanf(line, "%u %u %*u %63s", &maj, &min, name) == 3)
+			devs[count++] = (maj << 20) | (min & 0xFFFFF);
+	}
+	fclose(f);
+	return count;
+}
+
+// 检查 dev_t 是否在活跃设备列表中
+static int dev_is_active(__u32 dev, const __u32 *devs, int count)
+{
+	for (int i = 0; i < count; i++)
+		if (devs[i] == dev) return 1;
+	return 0;
+}
+
 static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval_s)
 {
 	char ts[32];
@@ -56,6 +88,9 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		"----------------------------------------------------------------------\n\n",
 		ts, interval_s);
 
+	__u32 active_devs[MAX_ACTIVE_DEVS];
+	int active_count = get_active_devs(active_devs, MAX_ACTIVE_DEVS);
+
 	__u32 key = 0, next_key;
 	int seq = 0;
 	int has_data = 0;
@@ -63,6 +98,13 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 	while (bpf_map_get_next_key(stats_fd, &key, &next_key) == 0) {
 		struct dev_stats val = {};
 		if (bpf_map_lookup_elem(stats_fd, &next_key, &val) != 0) {
+			key = next_key;
+			continue;
+		}
+
+		// 清理已移除设备留下的僵尸条目
+		if (!dev_is_active(next_key, active_devs, active_count)) {
+			bpf_map_delete_elem(stats_fd, &next_key);
 			key = next_key;
 			continue;
 		}
