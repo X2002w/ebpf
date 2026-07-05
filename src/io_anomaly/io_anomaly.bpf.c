@@ -62,6 +62,19 @@ struct {
 } io_req SEC(".maps");
 
 
+// 获取设备号: 优先 rq->part->bd_dev，fallback rq->q->disk->major/first_minor
+// BPF_CORE_READ 在指针为 NULL 时返回 0，两条路径互为兜底
+static inline dev_t get_rq_dev(struct request *rq)
+{
+  dev_t dev = BPF_CORE_READ(rq, part, bd_dev);
+  if (dev)
+    return dev;
+
+  int major = BPF_CORE_READ(rq, q, disk, major);
+  int first_minor = BPF_CORE_READ(rq, q, disk, first_minor);
+  return ((major & 0xFFFFF) << 20) | (first_minor & 0xFFFFF);
+}
+
 // 获取struct dev_stats
 static inline struct dev_stats *get_dev_stats(dev_t dev)
 {
@@ -84,8 +97,7 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
   struct request *rq = (struct request *)ctx->args[0];
   if(!rq) return 0;
 
-  // 通过rq -> part -> bd_dev直接拿取设备号, 跳两次
-  dev_t dev = BPF_CORE_READ(rq, part, bd_dev); 
+  dev_t dev = get_rq_dev(rq); 
 
   // 读取总扇区数: 总字节数 / 512
   unsigned int nr_sector = BPF_CORE_READ(rq, __data_len) >> 9;
