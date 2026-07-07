@@ -20,10 +20,18 @@ vmlinux.h:
 $(APP).bpf.o: $(APP).bpf.c vmlinux.h
 	$(CLANG) $(CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) -c $(APP).bpf.c -o $@
 
+
 $(APP).skel.h: $(APP).bpf.o
 	$(BPFTOOL) gen skeleton $< > $@
 
-$(APP): $(APP).c $(APP).skel.h 
+# hotfile bpf 
+hotfile.bpf.o: hotfile.bpf.c vmlinux.h
+	$(CLANG) $(CFLAGS) -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) -c hotfile.bpf.c -o $@
+
+hotfile.skel.h: hotfile.bpf.o
+	$(BPFTOOL) gen skeleton $< > $@
+
+$(APP): $(APP).c $(APP).skel.h hotfile.skel.h
 	$(CLANG) $(CFLAGS) $(INCLUDES) $(SRCS) $(LDLIBS) -o $@
 
 

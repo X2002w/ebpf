@@ -12,6 +12,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "io_anomaly.skel.h"
+#include "hotfile.skel.h"
 
 #define DEFAULT_INTERVAL 3
 #define MAX_ACTIVE_DEVS 256
@@ -30,6 +31,23 @@ struct dev_stats {
   unsigned long long ic_qdepth_cur;
   unsigned long long ii_qdepth_max;
   unsigned long long ic_qdepth_max;
+};
+
+struct file_io_stat {
+  unsigned long long rd_count;
+  unsigned long long wr_count;
+  unsigned long long rd_bytes;
+  unsigned long long wr_bytes;
+  unsigned long long total_lat_ns;
+  unsigned long long last_ts;
+  char comm[16];
+  char fname[40];
+}; 
+
+// 热点文件
+struct hot_entry {
+  unsigned long long file_key;
+  struct file_io_stat stat;
 };
 
 static volatile sig_atomic_t exiting;
@@ -201,6 +219,101 @@ static void reset_dev_stats(int map_fd)
 	}
 }
 
+static int cmp_hot_by_iops(const void *a, const void *b)
+{
+  const struct hot_entry *ha = (const struct hot_entry *)a;
+  const struct hot_entry *hb = (const struct hot_entry *)b;
+  unsigned long long ia = ha->stat.rd_count + ha->stat.wr_count;
+  unsigned long long ib = hb->stat.rd_count + hb->stat.wr_count;
+  if (ia < ib) return 1;
+  if (ia > ib) return -1;
+  return 0;
+}
+
+static void print_hotfile_report(FILE *out, int file_stats_fd, double interval_s)
+{
+  // 1. 遍历 file_stats, 收集到一个数组中
+  struct hot_entry entries[10240];
+  int nr = 0;
+  unsigned long long total_ios = 0;
+
+  __u64 key = 0, next_key;
+  while (bpf_map_get_next_key(file_stats_fd, &key, &next_key) == 0
+         && nr < 10240) {
+    struct file_io_stat val = {};
+    if (bpf_map_lookup_elem(file_stats_fd, &next_key, &val) == 0) {
+        entries[nr].file_key = next_key;
+        entries[nr].stat     = val;
+        total_ios += val.rd_count + val.wr_count;
+        nr++;
+    }
+    key = next_key;
+  }
+
+  if (nr == 0) {
+    fprintf(out, "  (未采集到文件级 I/O 数据)\n\n");
+    return;
+  }
+
+  // 2. 按 IOPS 降序排列
+  qsort(entries, nr, sizeof(entries[0]), cmp_hot_by_iops);
+
+  // 3. 打印 top-10 热点文件
+  fprintf(out,
+      "──────────────────────────────────────────────────────────────────────\n"
+      "  热点文件访问 Top-10\n"
+      "──────────────────────────────────────────────────────────────────────\n\n");
+
+  unsigned long long top3_ios = 0;
+  for (int i = 0; i < nr && i < 10; i++) {
+    __u32 dev    = (__u32)(entries[i].file_key >> 32);
+    __u64 inode  = entries[i].file_key & 0xFFFFFFFFULL;
+    struct file_io_stat *s = &entries[i].stat;
+
+    unsigned long long ios  = s->rd_count + s->wr_count;
+    double iops             = (double)ios / interval_s;
+    double rd_mbps          = (double)s->rd_bytes / interval_s / 1e6;
+    double wr_mbps          = (double)s->wr_bytes / interval_s / 1e6;
+    double avg_lat_us       = ios > 0
+        ? (double)s->total_lat_ns / (double)ios / 1000.0 : 0;
+
+    fprintf(out,
+        "  [%d] dev=%u:%u ino=%lu  %s (comm=%s)\n"
+        "      IOPS: %.0f  |  读: %.1f MB/s  |  写: %.1f MB/s  |  平均延迟: %.1f us\n\n",
+        i + 1, dev >> 20, dev & 0xFFFFF, (unsigned long)inode,
+        s->fname[0] ? s->fname : "(unknown)",
+        s->comm[0]  ? s->comm  : "(unknown)",
+        iops, rd_mbps, wr_mbps, avg_lat_us);
+
+    if (i < 3) top3_ios += ios;
+  }
+
+  // 4. 集中度判定
+  if (total_ios > 0) {
+    double top3_pct = (double)top3_ios / (double)total_ios * 100.0;
+    fprintf(out, "  文件访问集中度:\n");
+    fprintf(out, "    Top-3 文件 IOPS 占比: %.1f%%\n", top3_pct);
+
+    if (top3_pct > 70.0)
+      fprintf(out, "    >> 热点文件访问集中 — Top-3 文件占总 I/O %.1f%%\n", top3_pct);
+    else if (top3_pct > 50.0)
+      fprintf(out, "    >> 存在一定热点集中 — Top-3 文件占总 I/O %.1f%%\n", top3_pct);
+    else
+      fprintf(out, "    文件访问分布均匀, 无明显热点\n");
+}
+
+  fprintf(out, "\n");
+}
+
+static void reset_file_stats(int map_fd)
+{
+  __u64 key = 0, next_key;
+  while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
+    bpf_map_delete_elem(map_fd, &next_key);
+    key = next_key;
+  }
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -263,6 +376,31 @@ int main(int argc, char **argv)
 		io_anomaly_bpf__destroy(skel);
 		return 1;
 	}
+  
+  
+	struct hotfile_bpf *hot_skel = hotfile_bpf__open_and_load();
+	if (!hot_skel) {
+	  io_anomaly_bpf__destroy(skel);
+		fprintf(stderr, "无法加载 BPF 程序（需要 root 权限）\n");
+		return 1;
+	}
+
+	if (hotfile_bpf__attach(hot_skel) != 0) {
+		fprintf(stderr, "无法挂载 BPF 程序\n");
+	  io_anomaly_bpf__destroy(skel);
+		hotfile_bpf__destroy(hot_skel);
+		return 1;
+	}
+
+	int hotfile_stats_fd = bpf_map__fd(hot_skel->maps.file_stats);
+
+	if (hotfile_stats_fd < 0) {
+		fprintf(stderr, "无法获取 BPF map fd\n");
+	  io_anomaly_bpf__destroy(skel);
+		hotfile_bpf__destroy(hot_skel);
+		return 1;
+	}
+
 
 	fprintf(stderr, "[*] I/O 异常观测已启动, 采样间隔=%ds\n", interval);
 	fprintf(stderr, "[*] 追踪 tracepoint: block_rq_insert / block_rq_issue / block_rq_complete\n");
@@ -273,6 +411,8 @@ int main(int argc, char **argv)
 		sleep(interval);
 
 		print_io_report(stdout, stats_fd, req_fd, (double)interval);
+    print_hotfile_report(stdout, hotfile_stats_fd, (double)interval);
+    reset_file_stats(hotfile_stats_fd);
 		reset_dev_stats(stats_fd);
 
 		if (duration > 0 && time(NULL) - start >= duration)
@@ -281,6 +421,7 @@ int main(int argc, char **argv)
 
 	fprintf(stderr, "[*] 正在退出...\n");
 	io_anomaly_bpf__destroy(skel);
+  hotfile_bpf__destroy(hot_skel);
 
 	return 0;
 }
