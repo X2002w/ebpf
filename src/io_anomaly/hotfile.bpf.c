@@ -87,7 +87,7 @@ static inline struct file_io_stat* get_or_create_file_stat(__u64 file_key, struc
 // vfs 记录读写开始时间
 // 参数列表从linux 源码fs/read_read.c的定义里获取
 SEC("fentry/vfs_read")
-int BPF_PROG(vfs_read_entry, struct file *file, char __user *buf, size_t count, loff_t *pos)
+int BPF_PROG(vfs_read_entry, struct file *file, char *buf, size_t count, loff_t *pos)
 {
   // 获取触发当前epbf事件的进程id/线程id
   struct vfs_pending_key key = {
@@ -103,7 +103,7 @@ int BPF_PROG(vfs_read_entry, struct file *file, char __user *buf, size_t count, 
 }
 
 SEC("fexit/vfs_read")
-int BPF_PROG(vfs_read_exit, struct file *file, char __user *buf, size_t count, loff_t *pos, ssize_t ret)
+int BPF_PROG(vfs_read_exit, struct file *file, char *buf, size_t count, loff_t *pos, ssize_t ret)
 {
   if (ret <= 0)
     return 0;
@@ -132,7 +132,7 @@ int BPF_PROG(vfs_read_exit, struct file *file, char __user *buf, size_t count, l
 }
 
 SEC("fentry/vfs_write")
-int BPF_PROG(vfs_write_entry, struct file *file, const char __user *buf, size_t count, loff_t *pos)
+int BPF_PROG(vfs_write_entry, struct file *file, const char *buf, size_t count, loff_t *pos)
 {
   // 获取触发当前epbf事件的进程id/线程id
   struct vfs_pending_key key = {
@@ -149,7 +149,7 @@ int BPF_PROG(vfs_write_entry, struct file *file, const char __user *buf, size_t 
 
 
 SEC("fexit/vfs_write")
-int BPF_PROG(vfs_write_exit, struct file *file, const char __user *buf, size_t count, loff_t *pos, ssize_t ret)
+int BPF_PROG(vfs_write_exit, struct file *file, const char *buf, size_t count, loff_t *pos, ssize_t ret)
 {
   if (ret <= 0)
     return 0;
