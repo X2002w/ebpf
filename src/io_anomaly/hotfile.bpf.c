@@ -116,7 +116,13 @@ int BPF_PROG(vfs_read_exit, struct file *file, char *buf, size_t count, loff_t *
   if (!val)
     return 0;
 
-  // 计算一次读文件vfa层耗时
+  // 过滤伪文件系统 (dev major == 0: eventfd, pipe, socket 等)
+  if (((val->file_key >> 32) >> 20) == 0) {
+    bpf_map_delete_elem(&vfs_pending, &key);
+    return 0;
+  }
+
+  // 计算一次读文件vfs层耗时
   __u64 lat_ns = bpf_ktime_get_ns() - val->ts;
 
   // 获取文件 io读写信息
@@ -162,7 +168,13 @@ int BPF_PROG(vfs_write_exit, struct file *file, const char *buf, size_t count, l
   if (!val)
     return 0;
 
-  // 计算一次读文件vfa层耗时
+  // 过滤伪文件系统 (dev major == 0: eventfd, pipe, socket 等)
+  if (((val->file_key >> 32) >> 20) == 0) {
+    bpf_map_delete_elem(&vfs_pending, &key);
+    return 0;
+  }
+
+  // 计算一次写文件vfs层耗时
   __u64 lat_ns = bpf_ktime_get_ns() - val->ts;
 
   // 获取文件 io读写信息
