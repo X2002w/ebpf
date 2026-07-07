@@ -31,6 +31,7 @@ struct dev_stats {
   unsigned long long ic_qdepth_cur;
   unsigned long long ii_qdepth_max;
   unsigned long long ic_qdepth_max;
+  unsigned long long lat_hist[16];
 };
 
 struct file_io_stat {
@@ -93,6 +94,26 @@ static int dev_is_active(__u32 dev, const __u32 *devs, int count)
 	return 0;
 }
 
+// 从 histogram 计算 Pxx 延迟 (us), bucket [i] = [2^i, 2^(i+1)) us, bucket 0 = [0, 2) us
+static double calc_percentile(const unsigned long long *hist, int slots,
+                               unsigned long long total, double pct)
+{
+	if (total == 0) return 0;
+	unsigned long long target = (unsigned long long)((double)total * pct);
+	if (target == 0) target = 1;
+
+	unsigned long long accum = 0;
+	for (int i = 0; i < slots; i++) {
+		accum += hist[i];
+		if (accum >= target) {
+			// 上界作为保守估计
+			if (i == 0) return 2.0;
+			return (double)(1ULL << (i + 1));
+		}
+	}
+	return (double)(1ULL << slots);
+}
+
 static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval_s)
 {
 	char ts[32];
@@ -151,6 +172,8 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		double avg_svc_us = total_ios > 0
 			? (double)val.total_svc_ns / (double)total_ios / 1000.0 : 0;
 		double max_lat_us = (double)val.max_lat_ns / 1000.0;
+		double p99_us = calc_percentile(val.lat_hist, 16, total_ios, 0.99);
+		double p999_us = calc_percentile(val.lat_hist, 16, total_ios, 0.999);
 
     // 读取内核支持的最大io处理积压深度
     int kernel_dqpth_max = 0;
@@ -171,7 +194,9 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			"    平均总延迟:   %7.1f us\n"
 			"    平均排队等待: %7.1f us\n"
 			"    平均服务时间: %7.1f us\n"
-			"    最大延迟:     %7.1f us\n\n"
+			"    最大延迟:     %7.1f us\n"
+			"    P99 延迟:     %7.1f us\n"
+			"    P99.9 延迟:   %7.1f us\n\n"
 			"  io请求队列深度:\n"
 			"    当前瞬时值: %llu\n"
 			"    窗口峰值:   %llu\n\n"
@@ -183,7 +208,7 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			val.rd_count, rd_mbps,
 			val.wr_count, wr_mbps,
 			iops,
-			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us,
+			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us, p99_us, p999_us,
 			val.ii_qdepth_cur, val.ii_qdepth_max,
       val.ic_qdepth_cur, val.ic_qdepth_max,
       kernel_dqpth_max);
@@ -266,15 +291,15 @@ static void print_hotfile_report(FILE *out, int file_stats_fd, double interval_s
 
   unsigned long long top3_ios = 0;
   for (int i = 0; i < nr && i < 10; i++) {
-    __u32 dev    = (__u32)(entries[i].file_key >> 32);
-    __u64 inode  = entries[i].file_key & 0xFFFFFFFFULL;
+    __u32 dev = (__u32)(entries[i].file_key >> 32);
+    __u64 inode = entries[i].file_key & 0xFFFFFFFFULL;
     struct file_io_stat *s = &entries[i].stat;
 
     unsigned long long ios  = s->rd_count + s->wr_count;
-    double iops             = (double)ios / interval_s;
-    double rd_mbps          = (double)s->rd_bytes / interval_s / 1e6;
-    double wr_mbps          = (double)s->wr_bytes / interval_s / 1e6;
-    double avg_lat_us       = ios > 0
+    double iops = (double)ios / interval_s;
+    double rd_mbps = (double)s->rd_bytes / interval_s / 1e6;
+    double wr_mbps = (double)s->wr_bytes / interval_s / 1e6;
+    double avg_lat_us = ios > 0
         ? (double)s->total_lat_ns / (double)ios / 1000.0 : 0;
 
     fprintf(out,

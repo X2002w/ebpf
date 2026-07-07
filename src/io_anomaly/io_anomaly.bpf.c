@@ -9,6 +9,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // cmd_flags mark
 #define CMD_FLAGS_MAEK 0xFF
+#define HIST_SLOTS 16
 
 // 每个块设备单独的检测数据
 
@@ -33,8 +34,8 @@ struct dev_stats {
   __u64 ii_qdepth_max;
   __u64 ic_qdepth_max;
 
-  // 所属进程？
-
+  // 延迟直方图: bucket [i] = [2^i, 2^(i+1)) us, bucket 0 = [0, 2) us
+  __u64 lat_hist[HIST_SLOTS];
 };
 
 struct {
@@ -89,6 +90,18 @@ static inline struct dev_stats *get_dev_stats(dev_t dev)
 }
 
 
+
+// 延迟分桶: power-of-2 us, 共 HIST_SLOTS 桶
+static inline __u32 lat_to_slot(__u64 lat_ns)
+{
+  __u64 lat_us = lat_ns / 1000;
+  if (lat_us < 2)
+    return 0;
+  __u32 slot = 64 - __builtin_clzll(lat_us) - 1;
+  if (slot >= HIST_SLOTS)
+    slot = HIST_SLOTS - 1;
+  return slot;
+}
 
 // block_rq_insert
 SEC("raw_tp/block_rq_insert")
@@ -185,6 +198,10 @@ int on_block_rq_complete(struct bpf_raw_tracepoint_args *ctx)
 
     if (total_lat > s->max_lat_ns)
       s->max_lat_ns = total_lat;
+
+    __u32 slot = lat_to_slot(total_lat);
+    if (slot < HIST_SLOTS)
+      __sync_fetch_and_add(&s->lat_hist[slot], 1);
 
     if (s->ic_qdepth_cur > 0)
       __sync_fetch_and_sub(&s->ic_qdepth_cur, 1);
