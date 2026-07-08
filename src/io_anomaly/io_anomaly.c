@@ -455,6 +455,280 @@ static void reset_file_stats(int map_fd)
   }
 }
 
+// I/O 诊断 
+
+enum { DIOK_NVME, DIOK_SSD, DIOK_HDD, DIOK_UNKNOWN };
+
+static int get_disk_kind(__u32 dev)
+{
+  unsigned int maj = dev >> 20;
+  unsigned int min = dev & 0xFFFFF;
+  char path[128];
+
+  // 分区设备没有 queue/rotational，fallback 到父设备
+  snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/queue/rotational", maj, min);
+  FILE *f = fopen(path, "r");
+  if (!f) {
+    snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/../queue/rotational", maj, min);
+    f = fopen(path, "r");
+  }
+  int rot = 1;
+  if (f) {
+    fscanf(f, "%d", &rot);
+    fclose(f);
+  }
+
+  // 检查是否 NVMe：分区和整盘都尝试
+  snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/device/model", maj, min);
+  f = fopen(path, "r");
+  if (!f) {
+    snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/../device/model", maj, min);
+    f = fopen(path, "r");
+  }
+  if (f) {
+    char model[128] = {};
+    fgets(model, sizeof(model), f);
+    fclose(f);
+    for (char *p = model; *p; p++)
+      if (*p >= 'A' && *p <= 'Z') *p = *p + ('a' - 'A');
+    if (strstr(model, "nvme"))
+      return DIOK_NVME;
+  }
+
+  return rot == 0 ? DIOK_SSD : DIOK_HDD;
+}
+
+static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
+                            int block_hist_fd, double interval_s)
+{
+  fprintf(out,
+    "======================================================================\n"
+    "  I/O 异常诊断报告\n"
+    "======================================================================\n\n");
+
+  int anomaly_count = 0;
+
+  // 收集文件级热点集中度
+  unsigned long long total_file_ios = 0;
+  unsigned long long top3_ios = 0;
+  struct hot_entry top_files[3] = {};
+  int nr_top = 0;
+
+  __u64 fkey = 0, fnext;
+  while (bpf_map_get_next_key(file_stats_fd, &fkey, &fnext) == 0 && nr_top < 10240) {
+    struct file_io_stat fval = {};
+    if (bpf_map_lookup_elem(file_stats_fd, &fnext, &fval) != 0) {
+      fkey = fnext;
+      continue;
+    }
+    unsigned long long ios = fval.rd_count + fval.wr_count;
+    total_file_ios += ios;
+
+    // 维护 top-3
+    int pos = nr_top < 3 ? nr_top : -1;
+    if (pos < 0) {
+      for (int i = 0; i < 3; i++) {
+        unsigned long long ti = top_files[i].stat.rd_count + top_files[i].stat.wr_count;
+        if (ios > ti) { pos = i; break; }
+      }
+      if (pos >= 0) {
+        for (int i = 2; i > pos; i--) top_files[i] = top_files[i-1];
+      }
+    }
+    if (pos >= 0) {
+      top_files[pos].file_key = fnext;
+      top_files[pos].stat = fval;
+      if (nr_top < 3) nr_top++;
+    }
+
+    fkey = fnext;
+  }
+  for (int i = 0; i < nr_top && i < 3; i++)
+    top3_ios += top_files[i].stat.rd_count + top_files[i].stat.wr_count;
+  double top3_pct = total_file_ios > 0
+    ? (double)top3_ios / (double)total_file_ios * 100.0 : 0;
+
+  // 遍历设备统计做逐设备诊断
+  __u32 key = 0, next_key;
+  int seq = 0;
+
+  while (bpf_map_get_next_key(stats_fd, &key, &next_key) == 0) {
+    struct dev_stats val = {};
+    if (bpf_map_lookup_elem(stats_fd, &next_key, &val) != 0) {
+      key = next_key;
+      continue;
+    }
+
+    __u32 dev = next_key;
+    unsigned int maj = dev >> 20;
+    unsigned int min = dev & 0xFFFFF;
+    unsigned long long total_ios = val.rd_count + val.wr_count;
+    if (total_ios < 10) { key = next_key; continue; }  // 采样太少不做诊断
+
+    seq++;
+    int kind = get_disk_kind(dev);
+
+    double iops = (double)total_ios / interval_s;
+    double avg_lat_us = (double)val.total_lat_ns / (double)total_ios / 1000.0;
+    double avg_qwait_us = (double)val.total_qwait_ns / (double)total_ios / 1000.0;
+    double avg_svc_us = (double)val.total_svc_ns / (double)total_ios / 1000.0;
+    double p99_us = 0, p999_us = 0;
+    {
+      unsigned long long accum = 0;
+      unsigned long long target99 = (unsigned long long)((double)total_ios * 0.99);
+      if (target99 == 0) target99 = 1;
+      unsigned long long target999 = (unsigned long long)((double)total_ios * 0.999);
+      if (target999 == 0) target999 = 1;
+      for (int i = 0; i < 16; i++) {
+        accum += val.lat_hist[i];
+        if (p99_us == 0 && accum >= target99)
+          p99_us = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
+        if (p999_us == 0 && accum >= target999)
+          p999_us = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
+      }
+    }
+
+    int has_reads = (val.total_rd_blks > 0);
+    double miss_rate = has_reads
+      ? (double)val.cache_miss_count / (double)val.total_rd_blks * 100.0 : 0;
+
+    int max_qd = 256;
+    {
+      char qpath[128];
+      snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/queue/nr_requests", maj, min);
+      FILE *qf = fopen(qpath, "r");
+      if (!qf) {
+        snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/../queue/nr_requests", maj, min);
+        qf = fopen(qpath, "r");
+      }
+      if (qf) { fscanf(qf, "%d", &max_qd); fclose(qf); }
+    }
+    double qd_usage_pct = max_qd > 0
+      ? (double)val.ic_qdepth_max / (double)max_qd * 100.0 : 0;
+
+    // 阈值选择
+    double p99_hi, qwait_hi;
+    const char *type_label;
+    switch (kind) {
+    case DIOK_NVME: p99_hi = 5.0;   qwait_hi = 2.0;  type_label = "NVMe"; break;
+    case DIOK_SSD:  p99_hi = 20.0;  qwait_hi = 10.0; type_label = "SSD";  break;
+    case DIOK_HDD:  p99_hi = 100.0; qwait_hi = 50.0; type_label = "HDD";  break;
+    default:        p99_hi = 50.0;  qwait_hi = 25.0; type_label = "unknown"; break;
+    }
+
+    // 触发条件收集
+    int triggers = 0;
+    int flag_lat  = (p99_us > p99_hi);
+    int flag_qd   = (qd_usage_pct > 70.0);
+    int flag_qwait = (avg_qwait_us > qwait_hi);
+    int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
+    int flag_hot   = (top3_pct > 70.0);
+    triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
+
+    if (triggers == 0) { key = next_key; continue; }
+
+    anomaly_count++;
+
+    // 根因判定
+    const char *anomaly_type = NULL;
+    const char *root_cause = NULL;
+    if (flag_qd && flag_lat) {
+      anomaly_type = "I/O 延迟抖动";
+      root_cause = "磁盘队列过深 — 并发请求超出设备处理能力，请求在队列中堆积";
+    } else if (flag_lat && flag_hot) {
+      anomaly_type = "I/O 延迟抖动";
+      root_cause = "热点文件访问集中 — 少量文件占用大量 I/O 带宽，导致争抢";
+    } else if (flag_cache && flag_lat) {
+      anomaly_type = "I/O 延迟抖动";
+      root_cause = "页面缓存失效 — 缓存空间被占满，同块数据反复从磁盘重读";
+    } else if (flag_qwait && flag_lat) {
+      anomaly_type = "I/O 延迟抖动";
+      root_cause = "多作业并发争抢 — 请求在调度层排队等待时间显著增加";
+    } else if (flag_qd) {
+      anomaly_type = "I/O 吞吐波动";
+      root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压";
+    } else if (flag_cache) {
+      anomaly_type = "I/O 缓存异常";
+      root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐";
+    } else if (flag_lat) {
+      anomaly_type = "I/O 延迟抖动";
+      root_cause = "随机读写压力 — 大量小 IO 请求导致设备寻道/寻址开销增大";
+    } else {
+      anomaly_type = "I/O 异常波动";
+      root_cause = "多因素综合 — 建议结合系统日志进一步排查";
+    }
+
+    // 输出
+    fprintf(out,
+      "──────────────────────────────────────────────────────────────────────\n"
+      "  [诊断 #%d] 设备 %u:%u (%s)\n"
+      "──────────────────────────────────────────────────────────────────────\n\n"
+      "  异常类型: %s\n"
+      "  关联对象: 块设备 %u:%u\n"
+      "  疑似根因: %s\n\n"
+      "  关键指标:\n"
+      "    P99 时延:     %6.1f us  (阈值: %.0f us, %s)\n"
+      "    P99.9 时延:   %6.1f us\n"
+      "    平均时延:     %6.1f us\n"
+      "    排队等待:     %6.1f us  (阈值: %.0f us)\n"
+      "    服务时间:     %6.1f us\n"
+      "    IOPS:         %6.0f\n"
+      "    队列深度:     %6llu (max) / %d (max kernel), 使用率 %.0f%%\n"
+      "    缓存失效率:   %5.1f%%  (%llu / %llu 块)%s\n\n",
+      seq, maj, min, type_label,
+      anomaly_type,
+      maj, min,
+      root_cause,
+      p99_us, p99_hi, flag_lat ? "!! 超标" : "OK",
+      p999_us,
+      avg_lat_us,
+      avg_qwait_us, qwait_hi,
+      avg_svc_us,
+      iops,
+      val.ic_qdepth_max, max_qd, qd_usage_pct,
+      miss_rate, val.cache_miss_count, val.total_rd_blks,
+      has_reads ? "" : " (N/A — 无读请求)");
+
+    // 证据列表
+    fprintf(out, "  证据:\n");
+    int ev_n = 1;
+    if (flag_lat)
+      fprintf(out, "    %d. P99 时延 %.1f us 超出 %s 阈值 %.0f us\n", ev_n++, p99_us, type_label, p99_hi);
+    if (flag_qd)
+      fprintf(out, "    %d. 队列深度峰值 %llu，达到内核上限 %d 的 %.0f%%\n", ev_n++, val.ic_qdepth_max, max_qd, qd_usage_pct);
+    if (flag_qwait)
+      fprintf(out, "    %d. 平均排队等待 %.1f us 显著偏高（阈值 %.0f us），IO 在调度层堆积\n", ev_n++, avg_qwait_us, qwait_hi);
+    if (flag_cache)
+      fprintf(out, "    %d. 缓存失效率 %.1f%%，同块数据在 %dms 内被重复读取 %llu 次\n", ev_n++, miss_rate, 500, val.cache_miss_count);
+    if (flag_hot)
+      fprintf(out, "    %d. Top-3 热点文件占全局 IOPS 的 %.1f%%，访问高度集中\n", ev_n++, top3_pct);
+    if (!flag_lat && !flag_qd && !flag_qwait && !flag_cache)
+      fprintf(out, "    %d. 指标波动幅度较小，建议延长观测窗口确认趋势\n", ev_n++);
+
+    // 热点文件关联
+    if (flag_hot && nr_top > 0) {
+      fprintf(out, "\n  关联热点文件:\n");
+      for (int i = 0; i < nr_top; i++) {
+        struct file_io_stat *fs = &top_files[i].stat;
+        unsigned long long fios = fs->rd_count + fs->wr_count;
+        fprintf(out, "    - %s (comm=%s)  IOPS=%.0f\n",
+          fs->fname[0] ? fs->fname : "(unknown)",
+          fs->comm[0]  ? fs->comm  : "(unknown)",
+          (double)fios / interval_s);
+      }
+    }
+
+    fprintf(out, "\n");
+    key = next_key;
+  }
+
+  if (anomaly_count == 0)
+    fprintf(out, "  (未检测到明显 I/O 异常 — 所有设备指标在正常范围内)\n\n");
+
+  fprintf(out, "======================================================================\n\n");
+  fflush(out);
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -555,6 +829,7 @@ int main(int argc, char **argv)
 		print_io_report(stdout, stats_fd, req_fd, (double)interval);
 		print_cache_thrash_report(stdout, block_hist_fd);
     print_hotfile_report(stdout, hotfile_stats_fd, (double)interval);
+		print_diagnosis(stdout, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
     reset_file_stats(hotfile_stats_fd);
 		reset_dev_stats(stats_fd);
 		reset_block_read_hist(block_hist_fd);
