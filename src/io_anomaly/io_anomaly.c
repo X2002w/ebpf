@@ -15,8 +15,10 @@
 #include "hotfile.skel.h"
 
 #define DEFAULT_INTERVAL 3
+#define MIN_SAMPLES_FOR_PCT 100  // P99/P99.9 需要的最少样本数
 #define MAX_ACTIVE_DEVS 256
 #define MAX_THRASH_ENTRIES 5
+#define HIST_SLOTS 16
 
 // 与 BPF 侧 struct dev_stats 保持一致的统计结构
 struct dev_stats {
@@ -268,6 +270,16 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		double max_lat_us = (double)val.max_lat_ns / 1000.0;
 		double p99_us = calc_percentile(val.lat_hist, 16, total_ios, 0.99);
 		double p999_us = calc_percentile(val.lat_hist, 16, total_ios, 0.999);
+		int enough_samples = (total_ios >= MIN_SAMPLES_FOR_PCT);
+		char p99_str[32], p999_str[32];
+
+		if (enough_samples) {
+			snprintf(p99_str, sizeof(p99_str), "%7.1f us", p99_us);
+			snprintf(p999_str, sizeof(p999_str), "%7.1f us", p999_us);
+		} else {
+			snprintf(p99_str, sizeof(p99_str), "   N/A (样本<100)");
+			snprintf(p999_str, sizeof(p999_str), "   N/A (样本<100)");
+		}
 
 		// 缓存命中率估算
 		unsigned long long total_blks = val.total_rd_blks;
@@ -300,8 +312,8 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			"    平均排队等待: %7.1f us\n"
 			"    平均服务时间: %7.1f us\n"
 			"    最大延迟:     %7.1f us\n"
-			"    P99 延迟:     %7.1f us\n"
-			"    P99.9 延迟:   %7.1f us\n\n"
+			"    P99 延迟:     %s\n"
+			"    P99.9 延迟:   %s\n\n"
 			"  io请求队列深度:\n"
 			"    当前瞬时值: %llu\n"
 			"    窗口峰值:   %llu\n\n"
@@ -319,7 +331,7 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			val.rd_count, rd_mbps,
 			val.wr_count, wr_mbps,
 			iops,
-			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us, p99_us, p999_us,
+			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us, p99_str, p999_str,
 			val.ii_qdepth_cur, val.ii_qdepth_max,
       val.ic_qdepth_cur, val.ic_qdepth_max,
       kernel_dqpth_max,
@@ -579,7 +591,7 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       if (target99 == 0) target99 = 1;
       unsigned long long target999 = (unsigned long long)((double)total_ios * 0.999);
       if (target999 == 0) target999 = 1;
-      for (int i = 0; i < 16; i++) {
+      for (int i = 0; i < HIST_SLOTS; i++) {
         accum += val.lat_hist[i];
         if (p99_us == 0 && accum >= target99)
           p99_us = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
@@ -610,17 +622,17 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     double p99_hi, qwait_hi;
     const char *type_label;
     switch (kind) {
-    case DIOK_NVME: p99_hi = 5.0;   qwait_hi = 2.0;  type_label = "NVMe"; break;
-    case DIOK_SSD:  p99_hi = 20.0;  qwait_hi = 10.0; type_label = "SSD";  break;
-    case DIOK_HDD:  p99_hi = 100.0; qwait_hi = 50.0; type_label = "HDD";  break;
-    default:        p99_hi = 50.0;  qwait_hi = 25.0; type_label = "unknown"; break;
+    case DIOK_NVME: p99_hi = 500.0;  qwait_hi = 100.0;  type_label = "NVMe"; break;
+    case DIOK_SSD:  p99_hi = 2000.0; qwait_hi = 500.0;  type_label = "SSD";  break;
+    case DIOK_HDD:  p99_hi = 10000.0; qwait_hi = 5000.0; type_label = "HDD";  break;
+    default:        p99_hi = 5000.0; qwait_hi = 2000.0; type_label = "unknown"; break;
     }
 
     // 触发条件收集
     int triggers = 0;
-    int flag_lat  = (p99_us > p99_hi);
+    int flag_lat  = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
     int flag_qd   = (qd_usage_pct > 70.0);
-    int flag_qwait = (avg_qwait_us > qwait_hi);
+    int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
     int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
     int flag_hot   = (top3_pct > 70.0);
     triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
