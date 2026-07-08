@@ -10,6 +10,7 @@ char LICENSE[] SEC("license") = "Dual BSD/GPL";
 // cmd_flags mark
 #define CMD_FLAGS_MAEK 0xFF
 #define HIST_SLOTS 16
+#define CACHE_WINDOW_NS 500000000ULL  // 500ms 同块重复读判定窗口
 
 // 每个块设备单独的检测数据
 
@@ -36,6 +37,11 @@ struct dev_stats {
 
   // 延迟直方图: bucket [i] = [2^i, 2^(i+1)) us, bucket 0 = [0, 2) us
   __u64 lat_hist[HIST_SLOTS];
+
+  // 缓存失效检测
+  __u64 cache_miss_count;  // 窗口内重复读事件数
+  __u64 cache_miss_bytes;  // 重复读涉及字节数
+  __u64 total_rd_blks;     // 窗口内读块总数
 };
 
 struct {
@@ -45,6 +51,25 @@ struct {
   __type(value, struct dev_stats);
 
 } dev_stats SEC(".maps");
+
+// 缓存失效检测: 记录每个块设备扇区的最近读时间
+struct block_read_key {
+  __u32 dev;
+  __u64 sector;
+};
+
+struct block_read_val {
+  __u64 first_ts;
+  __u64 last_ts;
+  __u32 read_count;
+};
+
+struct {
+  __uint(type, BPF_MAP_TYPE_LRU_HASH);
+  __uint(max_entries, 65536);
+  __type(key, struct block_read_key);
+  __type(value, struct block_read_val);
+} block_read_hist SEC(".maps");
 
 // 单次IO_request
 struct io_req_info {
@@ -131,6 +156,36 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
     __sync_fetch_and_add(&s->ii_qdepth_cur, 1);
     if (s->ii_qdepth_cur > s->ii_qdepth_max)
       s->ii_qdepth_max = s->ii_qdepth_cur;
+  }
+
+  // 缓存失效检测: 仅读请求，检测同块短时间内重复读
+  if (rw == 0 && s) {
+
+    // 读取当前扇区
+    __u64 sector = BPF_CORE_READ(rq, __sector);
+    struct block_read_key bk = { 
+      .dev = dev,
+      .sector = sector
+    };
+    struct block_read_val *bv = bpf_map_lookup_elem(&block_read_hist, &bk);
+    __u64 now = bpf_ktime_get_ns();
+
+    __sync_fetch_and_add(&s->total_rd_blks, 1);
+
+    if (bv && (now - bv->last_ts) < CACHE_WINDOW_NS) {
+      __sync_fetch_and_add(&s->cache_miss_count, 1);
+      __sync_fetch_and_add(&s->cache_miss_bytes, (__u64)nr_sector * 512);
+      bv->last_ts = now;
+      __sync_fetch_and_add(&bv->read_count, 1);
+    } 
+    else {
+      struct block_read_val new_val = {
+        .first_ts = now,
+        .last_ts = now,
+        .read_count = 1,
+      };
+      bpf_map_update_elem(&block_read_hist, &bk, &new_val, BPF_ANY);
+    }
   }
 
   return 0;

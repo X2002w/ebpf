@@ -16,6 +16,7 @@
 
 #define DEFAULT_INTERVAL 3
 #define MAX_ACTIVE_DEVS 256
+#define MAX_THRASH_ENTRIES 5
 
 // 与 BPF 侧 struct dev_stats 保持一致的统计结构
 struct dev_stats {
@@ -32,6 +33,20 @@ struct dev_stats {
   unsigned long long ii_qdepth_max;
   unsigned long long ic_qdepth_max;
   unsigned long long lat_hist[16];
+  unsigned long long cache_miss_count;
+  unsigned long long cache_miss_bytes;
+  unsigned long long total_rd_blks;
+};
+
+struct block_read_key {
+  unsigned int dev;
+  unsigned long long sector;
+};
+
+struct block_read_val {
+  unsigned long long first_ts;
+  unsigned long long last_ts;
+  unsigned int read_count;
 };
 
 struct file_io_stat {
@@ -49,6 +64,12 @@ struct file_io_stat {
 struct hot_entry {
   unsigned long long file_key;
   struct file_io_stat stat;
+};
+
+struct thrash_entry {
+	unsigned int dev;
+	unsigned long long sector;
+	unsigned int read_count;
 };
 
 static volatile sig_atomic_t exiting;
@@ -114,6 +135,79 @@ static double calc_percentile(const unsigned long long *hist, int slots,
 	return (double)(1ULL << slots);
 }
 
+static int cmp_thrash(const void *a, const void *b)
+{
+	const struct thrash_entry *ta = (const struct thrash_entry *)a;
+	const struct thrash_entry *tb = (const struct thrash_entry *)b;
+	if (ta->read_count < tb->read_count) return 1;
+	if (ta->read_count > tb->read_count) return -1;
+	return 0;
+}
+
+static void print_cache_thrash_report(FILE *out, int block_hist_fd)
+{
+	struct thrash_entry top[MAX_THRASH_ENTRIES];
+	int nr = 0;
+
+	struct block_read_key key = {}, next_key;
+	while (bpf_map_get_next_key(block_hist_fd, &key, &next_key) == 0) {
+		struct block_read_val val = {};
+		if (bpf_map_lookup_elem(block_hist_fd, &next_key, &val) != 0) {
+			key = next_key;
+			continue;
+		}
+
+		if (val.read_count < 2) {
+			key = next_key;
+			continue;
+		}
+
+		if (nr < MAX_THRASH_ENTRIES) {
+			top[nr].dev = next_key.dev;
+			top[nr].sector = next_key.sector;
+			top[nr].read_count = val.read_count;
+			nr++;
+			qsort(top, nr, sizeof(top[0]), cmp_thrash);
+		} 
+    else if (val.read_count > top[MAX_THRASH_ENTRIES - 1].read_count) {
+			top[MAX_THRASH_ENTRIES - 1].dev = next_key.dev;
+			top[MAX_THRASH_ENTRIES - 1].sector = next_key.sector;
+			top[MAX_THRASH_ENTRIES - 1].read_count = val.read_count;
+			qsort(top, nr, sizeof(top[0]), cmp_thrash);
+		}
+
+		key = next_key;
+	}
+
+	if (nr == 0) return;
+
+	fprintf(out,
+		"──────────────────────────────────────────────────────────────────────\n"
+		"  缓存颠簸热点 Top-%d (窗口内同扇区重复读次数)\n"
+		"──────────────────────────────────────────────────────────────────────\n\n",
+		nr);
+
+	for (int i = 0; i < nr; i++) {
+		unsigned int maj = top[i].dev >> 20;
+		unsigned int min = top[i].dev & 0xFFFFF;
+		fprintf(out,
+			"  [%d] dev=%u:%u  sector=%llu  重复读次数: %u\n",
+			i + 1, maj, min,
+			(unsigned long long)top[i].sector,
+			top[i].read_count);
+	}
+	fprintf(out, "\n");
+}
+
+static void reset_block_read_hist(int map_fd)
+{
+	struct block_read_key key = {}, next_key;
+	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
+		bpf_map_delete_elem(map_fd, &next_key);
+		key = next_key;
+	}
+}
+
 static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval_s)
 {
 	char ts[32];
@@ -175,6 +269,17 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		double p99_us = calc_percentile(val.lat_hist, 16, total_ios, 0.99);
 		double p999_us = calc_percentile(val.lat_hist, 16, total_ios, 0.999);
 
+		// 缓存命中率估算
+		unsigned long long total_blks = val.total_rd_blks;
+		unsigned long long miss = val.cache_miss_count;
+		double miss_rate = total_blks > 0
+			? (double)miss / (double)total_blks * 100.0 : 0;
+		double hit_rate = 100.0 - miss_rate;
+		char cache_anomaly[128] = "";
+		if (total_blks > 100 && miss_rate > 10.0)
+			snprintf(cache_anomaly, sizeof(cache_anomaly),
+				"  !! 缓存失效率过高 (%.1f%%) — 页面缓存可能严重不足", miss_rate);
+
     // 读取内核支持的最大io处理积压深度
     int kernel_dqpth_max = 0;
     FILE *f = fopen("/sys/block/sda/queue/nr_requests", "r");
@@ -203,7 +308,13 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
       "  io处理积压队列深度:\n"
       "    当前瞬时值: %llu\n"
       "    窗口峰值:   %llu\n"
-      "  当前内核支持的最大积压队列深度: %d\n",
+      "  当前内核支持的最大积压队列深度: %d\n\n"
+      "  缓存命中率估算:\n"
+      "    读块总数:     %llu\n"
+      "    重复读块数:   %llu  (缓存失效)\n"
+      "    重复读字节:   %.1f MB\n"
+      "    估算命中率:   %.1f%%\n"
+      "    %s\n",
 			seq, maj, min, dev,
 			val.rd_count, rd_mbps,
 			val.wr_count, wr_mbps,
@@ -211,7 +322,12 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 			avg_lat_us, avg_qwait_us, avg_svc_us, max_lat_us, p99_us, p999_us,
 			val.ii_qdepth_cur, val.ii_qdepth_max,
       val.ic_qdepth_cur, val.ic_qdepth_max,
-      kernel_dqpth_max);
+      kernel_dqpth_max,
+      total_blks,
+      miss,
+      (double)val.cache_miss_bytes / 1e6,
+      hit_rate,
+      cache_anomaly);
 
 
 		key = next_key;
@@ -395,6 +511,7 @@ int main(int argc, char **argv)
 
 	int stats_fd = bpf_map__fd(skel->maps.dev_stats);
 	int req_fd = bpf_map__fd(skel->maps.io_req);
+	int block_hist_fd = bpf_map__fd(skel->maps.block_read_hist);
 
 	if (stats_fd < 0 || req_fd < 0) {
 		fprintf(stderr, "无法获取 BPF map fd\n");
@@ -436,9 +553,11 @@ int main(int argc, char **argv)
 		sleep(interval);
 
 		print_io_report(stdout, stats_fd, req_fd, (double)interval);
+		print_cache_thrash_report(stdout, block_hist_fd);
     print_hotfile_report(stdout, hotfile_stats_fd, (double)interval);
     reset_file_stats(hotfile_stats_fd);
 		reset_dev_stats(stats_fd);
+		reset_block_read_hist(block_hist_fd);
 
 		if (duration > 0 && time(NULL) - start >= duration)
 			break;
