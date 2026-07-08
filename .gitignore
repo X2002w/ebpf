@@ -1,3 +1,5 @@
+/build
+/eebpf
 demo/
 *.md
 *.txt
