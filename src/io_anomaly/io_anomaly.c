@@ -15,7 +15,8 @@
 #include "hotfile.skel.h"
 
 #define DEFAULT_INTERVAL 3
-#define MIN_SAMPLES_FOR_PCT 100  // P99/P99.9 需要的最少样本数
+#define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
+#define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
 #define MAX_ACTIVE_DEVS 256
 #define MAX_THRASH_ENTRIES 5
 #define HIST_SLOTS 16
@@ -604,6 +605,15 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     double miss_rate = has_reads
       ? (double)val.cache_miss_count / (double)val.total_rd_blks * 100.0 : 0;
 
+    char p99_str_diag[32], p999_str_diag[32];
+    if (total_ios >= MIN_SAMPLES_FOR_PCT) {
+      snprintf(p99_str_diag, sizeof(p99_str_diag), "%6.1f us", p99_us);
+      snprintf(p999_str_diag, sizeof(p999_str_diag), "%6.1f us", p999_us);
+    } else {
+      snprintf(p99_str_diag, sizeof(p99_str_diag), "   N/A");
+      snprintf(p999_str_diag, sizeof(p999_str_diag), "   N/A");
+    }
+
     int max_qd = 256;
     {
       char qpath[128];
@@ -634,7 +644,7 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     int flag_qd   = (qd_usage_pct > 70.0);
     int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
     int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
-    int flag_hot   = (top3_pct > 70.0);
+    int flag_hot   = (total_file_ios >= MIN_FILE_IOS_FOR_HOT && top3_pct > 70.0);
     triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
 
     if (triggers == 0) { key = next_key; continue; }
@@ -679,8 +689,8 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       "  关联对象: 块设备 %u:%u\n"
       "  疑似根因: %s\n\n"
       "  关键指标:\n"
-      "    P99 时延:     %6.1f us  (阈值: %.0f us, %s)\n"
-      "    P99.9 时延:   %6.1f us\n"
+      "    P99 时延:     %s  (阈值: %.0f us, %s)\n"
+      "    P99.9 时延:   %s\n"
       "    平均时延:     %6.1f us\n"
       "    排队等待:     %6.1f us  (阈值: %.0f us)\n"
       "    服务时间:     %6.1f us\n"
@@ -691,8 +701,8 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       anomaly_type,
       maj, min,
       root_cause,
-      p99_us, p99_hi, flag_lat ? "!! 超标" : "OK",
-      p999_us,
+      p99_str_diag, p99_hi, flag_lat ? "!! 超标" : "OK",
+      p999_str_diag,
       avg_lat_us,
       avg_qwait_us, qwait_hi,
       avg_svc_us,
