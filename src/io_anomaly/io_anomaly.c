@@ -675,6 +675,9 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     } else if (flag_lat) {
       anomaly_type = "I/O 延迟抖动";
       root_cause = "随机读写压力 — 大量小 IO 请求导致设备寻道/寻址开销增大";
+    } else if (flag_hot) {
+      anomaly_type = "I/O 负载集中";
+      root_cause = "单一文件占主导 — 当前负载主要集中在个别文件，设备性能正常";
     } else {
       anomaly_type = "I/O 异常波动";
       root_cause = "多因素综合 — 建议结合系统日志进一步排查";
