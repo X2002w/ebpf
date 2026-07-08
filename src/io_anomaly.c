@@ -75,17 +75,7 @@ struct thrash_entry {
 	unsigned int read_count;
 };
 
-static volatile sig_atomic_t exiting;
-
-static void on_signal(int sig) { (void)sig; exiting = 1; }
-
-static void iso_timestamp(char *buf, size_t len)
-{
-	time_t now = time(NULL);
-	struct tm tm;
-	localtime_r(&now, &tm);
-	strftime(buf, len, "%Y-%m-%dT%H:%M:%S", &tm);
-}
+#include "../include/utils.h"
 
 
 // 读取 /proc/partitions 获取当前活跃块设备列表，转为 dev_t 数组

@@ -68,7 +68,7 @@ struct stack_entry {
 	__u64 count;
 };
 
-static volatile sig_atomic_t exiting;
+#include "../include/utils.h"
 
 // ─── perf_event_open 系统调用封装 ─────────────────────────────────
 static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
@@ -76,9 +76,6 @@ static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
 {
 	return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
-
-// ─── 信号处理 ────────────────────────────────────────────────────
-static void on_signal(int sig) { (void)sig; exiting = 1; }
 
 // ─── libbpf 日志 ─────────────────────────────────────────────────
 static int print_fn(enum libbpf_print_level lvl, const char *fmt, va_list ap)
@@ -99,15 +96,6 @@ static void read_comm(__u32 pid, char *buf, size_t len)
 	else
 		snprintf(buf, len, "<?>");
 	fclose(f);
-}
-
-// ─── 获取 ISO‑8601 时间戳 ────────────────────────────────────────
-static void iso_timestamp(char *buf, size_t len)
-{
-	time_t now = time(NULL);
-	struct tm tm;
-	localtime_r(&now, &tm);
-	strftime(buf, len, "%Y-%m-%dT%H:%M:%S", &tm);
 }
 
 // ─── 收集 map 中所有进程统计 ─────────────────────────────────────
