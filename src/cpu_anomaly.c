@@ -23,6 +23,7 @@
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
 #include "../include/report_md.h"
+#include "../include/cpu_anomaly.h"
 
 // ─── 配置常量 ────────────────────────────────────────────────────
 #define DEFAULT_INTERVAL      5       // 采样间隔 (秒)
@@ -919,8 +920,8 @@ static void usage(const char *prog)
 		prog, prog, prog, prog, prog);
 }
 
-// ─── main ────────────────────────────────────────────────────────
-int main(int argc, char **argv)
+// ─── run_cpu ─────────────────────────────────────────────────────
+int run_cpu(int argc, char **argv)
 {
 	int   interval       = DEFAULT_INTERVAL;
 	int   duration       = 0;

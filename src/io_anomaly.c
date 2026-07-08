@@ -13,6 +13,7 @@
 #include <bpf/bpf.h>
 #include "io_anomaly.skel.h"
 #include "hotfile.skel.h"
+#include "../include/io_anomaly.h"
 
 #define DEFAULT_INTERVAL 3
 #define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
@@ -763,7 +764,7 @@ static void usage(const char *prog)
 		prog, DEFAULT_INTERVAL, prog, prog);
 }
 
-int main(int argc, char **argv)
+int run_io(int argc, char **argv)
 {
 	int interval = DEFAULT_INTERVAL;
 	int duration = 0;
