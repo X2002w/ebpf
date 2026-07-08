@@ -22,7 +22,7 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
-#include "../report_md.h"
+#include "../include/report_md.h"
 
 // ─── 配置常量 ────────────────────────────────────────────────────
 #define DEFAULT_INTERVAL      5       // 采样间隔 (秒)

@@ -12,7 +12,7 @@
 #include <sys/stat.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include "report_md.h"
+#include "../include/report_md.h"
 
 #define DEFAULT_OUTPUT "report/report.md"
 
