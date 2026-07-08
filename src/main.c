@@ -57,15 +57,13 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	for (int i = 1; i < argc; i++) {
-		if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0) {
-			printf("eebpf version %s\n", VERSION);
-			return 0;
-		}
-		if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
-			print_help(prog);
-			return 0;
-		}
+	if (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0) {
+		printf("eebpf version %s\n", VERSION);
+		return 0;
+	}
+	if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+		print_help(prog);
+		return 0;
 	}
 
 	const char *cmd = argv[1];
