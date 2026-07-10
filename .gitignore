@@ -8,6 +8,7 @@ demo/
 *.swp
 *.json
 .*/
+!.github/
 ai_test/venv/
 ai_test/api.txt
 
