@@ -11,10 +11,10 @@
 - [x] dev_stats dev_t作为map key, 在设备移除后，map条目变为僵尸数据，主动清理(/proc/partitions)读取设备列表
 - [x] 设备号 dev_t 使用两条路径拿取(rq->part->bd_dev) or (rq->q->disk->major / first_minor)
 - [x] 使用另外的fio测试命令，原测试命令体现不出io异常
-- [ ] 考虑去除ii_qdepth
+- [x] 考虑去除ii_qdepth
 - [x] ai诊断时, 添加原始系统设备数据, 为BPF 得到的基础数据做参考
 - [x] io 缓存失效 检测同块短时间内重复读，即缓存失效(cache 空间被占满)
 - [ ] io缓存失效 <- 内存抖动佐证 (多维关联分析)
-- [ ] 重构项目
-- [ ] 发布已经构建好的镜像
+- [x] 重构项目
+- [ ] cicd自动构建发布镜像
 
