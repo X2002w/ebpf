@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: openkylin-dev:latest
+    image: eebpf-dev:latest
     container_name: openkylin-dev
     network_mode: host
     privileged: true
