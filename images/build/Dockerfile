@@ -5,7 +5,7 @@ FROM ${OPENKYLIN_IMAGE} AS bpftool-builder
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential \ 
+        build-essential \
         pkg-config \
         libelf-dev \
         libcap-dev \
