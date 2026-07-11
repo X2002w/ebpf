@@ -16,8 +16,8 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_BUILD: ${{ github.repository_owner }}/eebpf-build
-  IMAGE_TEST: ${{ github.repository_owner }}/eebpf-test
+  IMAGE_BUILD: x2002w/eebpf-build
+  IMAGE_TEST: x2002w/eebpf-test
 
 jobs:
   build-and-push:

@@ -1,0 +1,27 @@
+name: Cleanup Old Package Versions
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "30 9 * * 0"
+
+permissions:
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: eebpf-build
+          package-type: container
+          min-versions-to-keep: 5
+          ignore-versions: "^latest$"
+
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: eebpf-test
+          package-type: container
+          min-versions-to-keep: 5
+          ignore-versions: "^latest$"

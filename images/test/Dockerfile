@@ -19,7 +19,7 @@ FROM base AS stress-ng-builder
 RUN git clone --depth=1 https://github.com/ColinIanKing/stress-ng.git /tmp/stress-ng && \
     cd /tmp/stress-ng && \
     make -j$(nproc) && \
-    make install && \
+    make PREFIX=/usr/local install && \
     cd / && \
     rm -rf /tmp/stress-ng
 
@@ -38,7 +38,7 @@ FROM base AS final
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libaio3 \
+        libaio1 \
         libnuma1 \
         librdmacm1 \
         libibverbs1 \
@@ -46,7 +46,7 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=stress-ng-builder /usr/local/bin/stress-ng /usr/local/bin/stress-ng
+COPY --from=stress-ng-builder /usr/bin/stress-ng /usr/local/bin/stress-ng
 COPY --from=fio-builder /usr/local/bin/fio /usr/local/bin/fio
 
 CMD ["/bin/bash"]
