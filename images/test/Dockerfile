@@ -38,7 +38,7 @@ FROM base AS final
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        libaio3 \
+        libaio1 \
         libnuma1 \
         librdmacm1 \
         libibverbs1 \
