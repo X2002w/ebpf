@@ -22,7 +22,7 @@ env:
 jobs:
   build-and-push:
     # 在仓库设置是否执行此项任务
-    if: ${{ var.GHCR_RELEASE_ENABLE == 'true' }}
+    if: ${{ vars.GHCR_RELEASE_ENABLE == 'true' }}
     name: Build and Push Images
     timeout-minutes: 60
     environment:
