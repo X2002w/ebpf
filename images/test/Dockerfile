@@ -19,7 +19,7 @@ FROM base AS stress-ng-builder
 RUN git clone --depth=1 https://github.com/ColinIanKing/stress-ng.git /tmp/stress-ng && \
     cd /tmp/stress-ng && \
     make -j$(nproc) && \
-    make install && \
+    make PREFIX=/usr/local install && \
     cd / && \
     rm -rf /tmp/stress-ng
 
