@@ -1,0 +1,76 @@
+name: Image Build Publish
+
+on:
+  push:
+    branches: 
+      - master
+    paths:
+      - images/**
+  workflow_dispatch:
+  schedule:
+    - cron: "20 9 * * 0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_BUILD: ${{ github.repository_owner }}/eebpf-build
+  IMAGE_TEST: ${{ github.repository_owner }}/eebpf-test
+
+jobs:
+  build-and-push:
+    # 在仓库设置是否执行此项任务
+    if: ${{ var.GHCR_RELEASE_ENABLE == 'true' }}
+    name: Build and Push Images
+    timeout-minutes: 60
+    environment:
+      name: ${{ inputs.environment || 'release-base-image' }}
+      deployment: false   # 非部署事件
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout default branch
+        uses: actions/checkout@v4
+
+      # - name: Cleanup Disk space in runner
+      #   uses: ./.github/actions/disk-cleanup
+
+      - name: Login GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 构建并推送 build 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/build/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_BUILD }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_BUILD }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 构建并推送 test 镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: images/test/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_TEST }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_TEST }}:${{ github.sha }}
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY }}/${{ env.IMAGE_BUILD }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

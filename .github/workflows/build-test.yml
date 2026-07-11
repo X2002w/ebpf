@@ -1,0 +1,41 @@
+name: Project Build Test
+
+on:
+  push:
+    branches: 
+      - master
+  pull_request:
+    branches: 
+      - master
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/eebpf-build
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /sys/kernel/btf:/sys/kernel/btf:ro
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 验证二进制
+        run: test -x ./eebpf
