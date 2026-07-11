@@ -46,7 +46,7 @@ jobs:
       - name: Install LLVM 19
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          apt-get update && apt-get install -y wget
+          apt-get update && apt-get install -y wget xz-utils
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz
           mkdir -p /tmp/llvm
           tar xf LLVM-19.1.7-Linux-X64.tar.xz -C /tmp/llvm --strip-components=1
