@@ -46,7 +46,7 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=stress-ng-builder /usr/local/bin/stress-ng /usr/local/bin/stress-ng
+COPY --from=stress-ng-builder /usr/bin/stress-ng /usr/local/bin/stress-ng
 COPY --from=fio-builder /usr/local/bin/fio /usr/local/bin/fio
 
 CMD ["/bin/bash"]
