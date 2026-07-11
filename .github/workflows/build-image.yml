@@ -37,6 +37,9 @@ jobs:
       - name: Checkout default branch
         uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       # - name: Cleanup Disk space in runner
       #   uses: ./.github/actions/disk-cleanup
 
