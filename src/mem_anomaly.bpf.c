@@ -4,18 +4,17 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
-#define MAP_ANONYMOUS 0x20
+#define VMF_RETRY 0x000400
+#define VMF_ERROR 0x000873
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // 记录每个进程的缺页此次数
 struct pid_mem_stats {
 
-  __u64 anon_mmap_count;
-  __u64 anon_mmap_bytes;
-  __u64 file_mmap_count;
-  __u64 file_mmap_bytes;
-
+  __u64 fault_raw;      // 记录每次调用handle-mm-fault的次数
+  __u64 fault_completed;// 统计缺页处理完成的次数
+  
   __u64 direct_reclaim_cnt;
   __u64 direct_reclaim_ns;
   __u64 reclaimed_pages;
@@ -209,41 +208,19 @@ int on_oom_mark_victim(struct trace_event_raw_mark_victim *ctx)
 }
 
 
-
-
-SEC("tp/expections/page_fault_user")
-int on_page_fault_user(void *ctx)
+SEC("kretprobe/handle_mm_fault")
+int on_handle_mm_fault(mm_fault_exit, unsigned int ret)
 {
-  __u32 pid = btf_bpf_get_current_pid_tgid() >> 32;
-
-  struct pid_mem_stats *p = bpf_map_lookup_elem(&pid_faults, &pid);
-  if (!p) {
-    struct pid_mem_stats zero = {};
-    bpf_map_update_elem(&pid_faults, &pid);
-    p = bpf_map_lookup_elem(&pid_faults, &pid);
-    if (!p) return 0;
-  }
-
-  // 查看当前是否缺页
-   p->last_fault_ts = bpf_ktime_get_ns();
-  return 0;
-}
-
-SEC("tp/syscalls/sys_enter_mmap")
-int on_sys_enter_mmap(struct trace_event_raw_sys_enter *ctx)
-{
-  // mmap 系统调用参数:
-  // args[0] -> addr, 1 -> len, prot(保护标志), flags, fd, offset
   __u32 pid = bpf_get_current_pid_tgid() >> 32;
-
-  long unsigned int addr = ctx->args[0];
-  long unsigned int len = ctx->args[1];
-  long unsigned int prot = ctx->args[2];
-  long unsigned int flags = ctx->args[3];
   
+  struct pid_mem_stats *p = get_pid_stats(pid);
+  if (!p) 
+    return 0;
 
+  __sync_fetch_and_add(&p->fault_raw, 1);
+  if (!(ret & (VMF_RETRY | VMF_ERROR)))
+    __sync_fetch_and_add(&p->fault_completed, 1);
 
   return 0;
 }
 
-*/
