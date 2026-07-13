@@ -50,6 +50,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
+        clang \
         libbpf-dev \
         libelf-dev \
         zlib1g-dev \
