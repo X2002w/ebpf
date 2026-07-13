@@ -209,7 +209,7 @@ int on_oom_mark_victim(struct trace_event_raw_mark_victim *ctx)
 
 
 SEC("kretprobe/handle_mm_fault")
-int on_handle_mm_fault(mm_fault_exit, unsigned int ret)
+int BPF_KPROBE(mm_fault_exit, unsigned int ret)
 {
   __u32 pid = bpf_get_current_pid_tgid() >> 32;
   
