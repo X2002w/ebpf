@@ -29,12 +29,27 @@ RUN apt-get update && \
     cd / && \
     rm -rf /tmp/bpf-next
 
+FROM ${OPENKYLIN_IMAGE} AS llvm-builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        wget \
+        xz-utils \
+        ca-certificates \
+        && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz && \
+    mkdir -p /usr/local/llvm19 && \
+    tar xf LLVM-19.1.7-Linux-X64.tar.xz -C /usr/local/llvm19 --strip-components=1 && \
+    rm LLVM-19.1.7-Linux-X64.tar.xz
+
 FROM ${OPENKYLIN_IMAGE}
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        clang \
         libbpf-dev \
         libelf-dev \
         zlib1g-dev \
@@ -44,6 +59,9 @@ RUN apt-get update && \
         && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
+ENV PATH="/usr/local/llvm19/bin:${PATH}"
+
+COPY --from=llvm-builder /usr/local/llvm19 /usr/local/llvm19
 COPY --from=bpftool-builder /usr/local/sbin/bpftool /usr/local/sbin/bpftool
 
 CMD ["/bin/bash"]
