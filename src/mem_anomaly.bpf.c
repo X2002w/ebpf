@@ -39,6 +39,14 @@ struct global_mem_stats {
   __u64 direct_reclaim_cnt;
   __u64 direct_reclaim_ns;
   __u64 reclaimed_pages;
+
+  __u64 page_scan;  // inactive lru 扫描页数
+  __u64 page_steal; // inactive lru 回收页数
+
+  __u64 oom_kills;
+  __u32 last_oom_pid;
+
+
 };
 
 struct {
@@ -172,8 +180,37 @@ int on_direct_reclaim_end(struct trace_event_raw_mm_vmscan_direct_reclaim_end_te
   return 0;
 }
 
+SEC("tp/vmscan/mm_vmscan_lru_shrink_inactive")
+int on_lru_shrink_inactive(struct trace_event_raw_mm_vmscan_lru_shrink_inactive *ctx)
+{
+  long unsigned int nr_scanned = ctx->nr_scanned;
+  long unsigned int nr_reclaimed = ctx->nr_reclaimed;
 
-/*
+  struct global_mem_stats *g = get_global_stats();
+  if (g) {
+    __sync_fetch_and_add(&g->page_scan, nr_scanned);
+    __sync_fetch_and_add(&g->page_steal, nr_reclaimed);
+  }
+
+  return 0;
+}
+
+
+SEC("tp/oom/mark_victim")
+int on_oom_mark_victim(struct trace_event_raw_mark_victim *ctx)
+{
+  struct global_mem_stats *g = get_global_stats();
+  if (g) {
+    __sync_fetch_and_add(&g->oom_kills, 1);
+    g->last_oom_pid = ctx->pid;
+  }
+
+  return 0;
+}
+
+
+
+
 SEC("tp/expections/page_fault_user")
 int on_page_fault_user(void *ctx)
 {
