@@ -16,5 +16,6 @@
 - [x] io 缓存失效 检测同块短时间内重复读，即缓存失效(cache 空间被占满)
 - [ ] io缓存失效 <- 内存抖动佐证 (多维关联分析)
 - [x] 重构项目
-- [ ] cicd自动构建发布镜像
+- [x] cicd自动构建发布镜像
+- [ ] 将下载LLVM从build test action移到dockr build action 中
 
