@@ -15,6 +15,7 @@
 
 #include "../include/cpu_anomaly.h"
 #include "../include/io_anomaly.h"
+#include "../include/mem_anomaly.h"
 
 #define VERSION "0.2.0-dev"
 
@@ -28,7 +29,7 @@ typedef struct {
 static module_t modules[] = {
 	{"cpu",  "CPU 异常检测",            run_cpu},
 	{"io",   "I/O 异常检测",            run_io},
-	{"mem",  "内存异常检测 (未实现)",    NULL},
+	{"mem",  "内存异常检测",            run_mem},
 	{"lock", "锁竞争检测 (未实现)",      NULL},
 	{"hot",  "系统调用热点分析 (未实现)", NULL},
 	{NULL, NULL, NULL},
