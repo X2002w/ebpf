@@ -101,6 +101,24 @@ static const char *syscall_name(unsigned int nr)
 	return buf;
 }
 
+static int is_wait_syscall(unsigned int nr)
+{
+	switch (nr) {
+	case 7:   // poll
+	case 23:  // select
+	case 35:  // nanosleep
+	case 230: // clock_nanosleep
+	case 232: // epoll_wait
+	case 270: // pselect6
+	case 271: // ppoll
+	case 281: // epoll_pwait
+	case 441: // epoll_pwait2
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 struct syscall_entry {
 	unsigned int nr;
 	struct syscall_stats stats;
@@ -153,8 +171,10 @@ struct pid_summary {
 	unsigned long long total_count;
 	unsigned long long total_ns;
 	unsigned long long max_ns;
-	unsigned int top_nr;
+	unsigned int top_nr;           // 次数最多的系统调用
 	unsigned long long top_nr_count;
+	unsigned int top_lat_nr;       // 耗时最多的系统调用
+	unsigned long long top_lat_ns;
 	char comm[16];
 };
 
@@ -218,6 +238,10 @@ static int collect_pid_summary(int map_fd, struct pid_summary **out, int *n)
 			found->top_nr_count = val.count;
       // 取低 32 位拿到系统调用号
 			found->top_nr = (unsigned int)(next & 0xFFFFFFFF);
+		}
+		if (val.total_ns > found->top_lat_ns) {
+			found->top_lat_ns = val.total_ns;
+			found->top_lat_nr = (unsigned int)(next & 0xFFFFFFFF);
 		}
 
 		key = next;
@@ -338,6 +362,10 @@ static void print_report(FILE *out,
 			fprintf(out,
 			        "      疑似根因: 事件循环或 busy-poll 导致短耗时系统调用高频重复\n"
 			        "      建议: 检查轮询逻辑，改用阻塞+超时或事件驱动模式\n");
+		else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr))
+			fprintf(out,
+			        "      疑似根因: 事件等待型系统调用，高耗时说明无事件到达或超时设置较长\n"
+			        "      建议: 属正常等待行为；若期望快速响应，检查 fd 活跃度和超时参数\n");
 		else if (avg_us > LAT_WARN_US)
 			fprintf(out,
 			        "      疑似根因: 系统调用阻塞等待 I/O、锁或网络资源\n"
@@ -363,15 +391,22 @@ static void print_report(FILE *out,
 		fprintf(out, "\n  [进程%d] TID %u (%s)  —  %s\n",
 		        pdiag, p->tid, p->comm,
 		        avg_us > LAT_WARN_US ? "高耗时" : "高频调用");
-		fprintf(out, "      系统调用总数: %llu (%.0f/s)  |  平均耗时: %.0fus  |  最多调用: %s (%llu次)\n",
-		        p->total_count, rate, avg_us,
-		        syscall_name(p->top_nr), p->top_nr_count);
+		fprintf(out, "      系统调用总数: %llu (%.0f/s)  |  平均耗时: %.0fus\n",
+		        p->total_count, rate, avg_us);
+		fprintf(out, "      最多调用: %s (%llu次)  |  耗时最多: %s (%.1fms)\n",
+		        syscall_name(p->top_nr), p->top_nr_count,
+		        syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
 
-		if (avg_us > LAT_WARN_US)
+		if (avg_us > LAT_WARN_US && is_wait_syscall(p->top_lat_nr))
+			fprintf(out,
+			        "      疑似根因: 线程主要时间在事件等待 (%s)，属正常 I/O 多路复用行为\n"
+			        "      建议: 无明显异常；若需降低时延，检查 fd 活跃度或调小超时\n",
+			        syscall_name(p->top_lat_nr));
+		else if (avg_us > LAT_WARN_US)
 			fprintf(out,
 			        "      疑似根因: 线程大量时间消耗在阻塞型系统调用 (%s)\n"
 			        "      建议: 分析 %s 调用路径，考虑异步化或减少阻塞时间\n",
-			        syscall_name(p->top_nr), syscall_name(p->top_nr));
+			        syscall_name(p->top_lat_nr), syscall_name(p->top_lat_nr));
 		else
 			fprintf(out,
 			        "      疑似根因: 线程频繁调用短耗时系统调用 (%s)，可能存在轮询模式\n"
