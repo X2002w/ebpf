@@ -153,6 +153,8 @@ struct pid_summary {
 	unsigned long long total_count;
 	unsigned long long total_ns;
 	unsigned long long max_ns;
+	unsigned int top_nr;
+	unsigned long long top_nr_count;
 	char comm[16];
 };
 
@@ -212,6 +214,11 @@ static int collect_pid_summary(int map_fd, struct pid_summary **out, int *n)
 		found->total_ns += val.total_ns;
 		if (val.max_ns > found->max_ns)
 			found->max_ns = val.max_ns;
+		if (val.count > found->top_nr_count) {
+			found->top_nr_count = val.count;
+      // 取低 32 位拿到系统调用号
+			found->top_nr = (unsigned int)(next & 0xFFFFFFFF);
+		}
 
 		key = next;
 	}
@@ -294,6 +301,86 @@ static void print_report(FILE *out,
 		        p->tid, p->comm, p->total_count, rate, avg_us, max_ms);
 	}
 	fprintf(out, "\n");
+
+	int diag_count = 0;
+	fprintf(out, "  诊断结论\n");
+
+	qsort(entries, n, sizeof(struct syscall_entry), cmp_count);
+	for (int i = 0; i < n; i++) {
+		struct syscall_stats *s = &entries[i].stats;
+		double rate = (double)s->count / duration_s;
+		double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
+		double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
+
+		if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US && err_pct <= ERR_RATE_WARN * 100)
+			continue;
+
+		diag_count++;
+		fprintf(out, "\n  [%d] %s", diag_count, syscall_name(entries[i].nr));
+
+		const char *type = NULL;
+		if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US)
+			type = "高频 + 高耗时";
+		else if (rate > FREQ_WARN_PER_SEC)
+			type = "高频调用";
+		else if (avg_us > LAT_WARN_US)
+			type = "高耗时";
+		else
+			type = "高错误率";
+		fprintf(out, "  —  %s\n", type);
+
+		fprintf(out, "      调用次数: %llu (%.0f/s)  |  平均耗时: %.0fus  |  最大耗时: %.1fms\n",
+		        s->count, rate, avg_us, (double)s->max_ns / 1e6);
+		if (err_pct > 0)
+			fprintf(out, "      错误率: %.1f%% (%llu/%llu)\n", err_pct, s->err_count, s->count);
+
+		if (rate > FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+			fprintf(out,
+			        "      疑似根因: 事件循环或 busy-poll 导致短耗时系统调用高频重复\n"
+			        "      建议: 检查轮询逻辑，改用阻塞+超时或事件驱动模式\n");
+		else if (avg_us > LAT_WARN_US)
+			fprintf(out,
+			        "      疑似根因: 系统调用阻塞等待 I/O、锁或网络资源\n"
+			        "      建议: 排查底层资源竞争，考虑异步 I/O 或批量操作\n");
+		else
+			fprintf(out,
+			        "      疑似根因: 系统调用参数错误或资源不可用\n"
+			        "      建议: 检查调用参数合法性及系统资源状态\n");
+	}
+
+	qsort(pids, pn, sizeof(struct pid_summary), cmp_pid);
+	int pdiag = 0;
+	for (int i = 0; i < pn && pdiag < 10; i++) {
+		struct pid_summary *p = &pids[i];
+		double rate = (double)p->total_count / duration_s;
+		double avg_us = p->total_count ?
+			(double)p->total_ns / p->total_count / 1000.0 : 0;
+
+		if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+			continue;
+
+		pdiag++;
+		fprintf(out, "\n  [进程%d] TID %u (%s)  —  %s\n",
+		        pdiag, p->tid, p->comm,
+		        avg_us > LAT_WARN_US ? "高耗时" : "高频调用");
+		fprintf(out, "      系统调用总数: %llu (%.0f/s)  |  平均耗时: %.0fus  |  最多调用: %s (%llu次)\n",
+		        p->total_count, rate, avg_us,
+		        syscall_name(p->top_nr), p->top_nr_count);
+
+		if (avg_us > LAT_WARN_US)
+			fprintf(out,
+			        "      疑似根因: 线程大量时间消耗在阻塞型系统调用 (%s)\n"
+			        "      建议: 分析 %s 调用路径，考虑异步化或减少阻塞时间\n",
+			        syscall_name(p->top_nr), syscall_name(p->top_nr));
+		else
+			fprintf(out,
+			        "      疑似根因: 线程频繁调用短耗时系统调用 (%s)，可能存在轮询模式\n"
+			        "      建议: 审查 %s 调用频率，调整轮询间隔或切换事件驱动\n",
+			        syscall_name(p->top_nr), syscall_name(p->top_nr));
+	}
+
+	if (diag_count == 0 && pdiag == 0)
+		fprintf(out, "  (当前系统调用指标在正常范围内)\n");
 
 	fflush(out);
 }
