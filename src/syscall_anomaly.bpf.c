@@ -9,6 +9,11 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
+// 非错误返回码白名单
+#define ERRNO_EAGAIN      11
+#define ERRNO_EINTR        4
+#define ERRNO_EINPROGRESS 115
+
 // 系统调用跟踪
 struct sys_enter_info {
 	__u64 enter_ts;
@@ -117,7 +122,9 @@ int on_sys_exit(struct trace_event_raw_sys_exit *ctx)
   __sync_fetch_and_add(&gs->total_ns, duration);
   if (duration > gs->max_ns)
     gs->max_ns = duration;
-  if (ctx->ret < 0)
+  // EAGAIN/EINTR/EINPROGRESS 属于正常语义，不计入错误
+  long ret = ctx->ret;
+  if (ret < 0 && ret != -ERRNO_EINTR && ret != -ERRNO_EAGAIN && ret != -ERRNO_EINPROGRESS)
     __sync_fetch_and_add(&gs->err_count, 1);
 
 	// 线程对应的系统调用统计
