@@ -17,6 +17,7 @@
 #include "../include/io_anomaly.h"
 #include "../include/mem_anomaly.h"
 #include "../include/lock_anomaly.h"
+#include "../include/syscall_anomaly.h"
 
 #define VERSION "0.2.0-dev"
 
@@ -32,7 +33,7 @@ static module_t modules[] = {
 	{"io",   "I/O 异常检测",            run_io},
 	{"mem",  "内存异常检测",            run_mem},
 	{"lock", "锁竞争检测",            run_lock},
-	{"hot",  "系统调用热点分析 (未实现)", NULL},
+	{"hot",  "系统调用热点分析", run_syscall},
 	{NULL, NULL, NULL},
 };
 
