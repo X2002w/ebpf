@@ -703,12 +703,12 @@ static void usage(const char *prog)
 		"分析线程锁竞争模式并输出结构化诊断报告。\n"
 		"\n"
 		"选项:\n"
-		"  -i <秒>           采样间隔（默认: %d）\n"
-		"  -d <秒>           总运行时长，0 表示持续运行（默认: 0）\n"
-		"  -o <文件路径>     输出到文件（默认: 标准输出）\n"
-		"  -p <Hz>           栈采样频率，需要 root（默认: %d, 0=禁用）\n"
-		"  -j, --json        额外写入 report.json\n"
-		"  -h, --help        显示本帮助信息\n"
+		"  -i, --interval <秒>      采样间隔（默认: %d）\n"
+		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
+		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
+		"  -j, --json               额外写入 report.json\n"
+		"  -h, --help               显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                            # 默认参数运行\n"
@@ -729,8 +729,12 @@ int run_lock(int argc, char **argv)
 	int json_mode = 0;
 
 	static struct option long_opts[] = {
-		{"json", no_argument, 0, 'j'},
-		{"help", no_argument, 0, 'h'},
+		{"interval", required_argument, 0, 'i'},
+		{"duration", required_argument, 0, 'd'},
+		{"output",   required_argument, 0, 'o'},
+		{"profile",  required_argument, 0, 'p'},
+		{"json",     no_argument,       0, 'j'},
+		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
@@ -747,16 +751,12 @@ int run_lock(int argc, char **argv)
 		}
 	}
 
-	if (interval < 1) {
-		fprintf(stderr, "采样间隔必须 >= 1\n");
+	if (check_interval(interval) != 0)
 		return 1;
-	}
 
-	FILE *out = stdout;
-	if (output_file) {
-		out = fopen(output_file, "w");
-		if (!out) { perror("fopen"); return 1; }
-	}
+	FILE *out = open_output(output_file);
+	if (!out)
+		return 1;
 
 	int ncpu = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 1) ncpu = 1;

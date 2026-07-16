@@ -115,3 +115,24 @@ int perf_event_open(struct perf_event_attr *attr, pid_t pid,
 {
 	return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
 }
+
+// 校验采样间隔，非法时打印错误并返回 -1
+int check_interval(int interval)
+{
+	if (interval < 1) {
+		fprintf(stderr, "采样间隔必须 >= 1\n");
+		return -1;
+	}
+	return 0;
+}
+
+// 打开输出文件，path 为 NULL 时使用标准输出，失败返回 NULL
+FILE *open_output(const char *path)
+{
+	if (!path)
+		return stdout;
+	FILE *f = fopen(path, "w");
+	if (!f)
+		perror("fopen");
+	return f;
+}

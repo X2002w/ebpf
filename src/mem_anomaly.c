@@ -751,11 +751,11 @@ static void usage(const char *prog)
     "/proc/meminfo 与 /proc/vmstat 提供容量快照与系统级速率。\n"
     "\n"
     "选项:\n"
-    "  -i <秒>    采样间隔（默认: %d）\n"
-    "  -d <秒>    总运行时长, 0 表示持续运行（默认: 0）\n"
-    "  -a <百分比> 可用内存低水位阈值（默认: %.0f）\n"
-    "  -f <次/s>  major fault 速率阈值（默认: %.0f）\n"
-    "  -h         显示本帮助信息\n"
+    "  -i, --interval <秒>            采样间隔（默认: %d）\n"
+    "  -d, --duration <秒>            总运行时长, 0 表示持续运行（默认: 0）\n"
+    "  -a, --avail-threshold <百分比> 可用内存低水位阈值（默认: %.0f）\n"
+    "  -f, --majfault-threshold <次/s> major fault 速率阈值（默认: %.0f）\n"
+    "  -h, --help                     显示本帮助信息\n"
     "\n"
     "示例:\n"
     "  sudo %s                 # 默认参数运行\n"
@@ -772,8 +772,17 @@ int run_mem(int argc, char **argv)
   double avail_pct_lo = DEF_AVAIL_PCT_LO;
   double majfault_hi  = DEF_MAJFAULT_HI;
 
+  static struct option long_opts[] = {
+    {"interval",           required_argument, 0, 'i'},
+    {"duration",           required_argument, 0, 'd'},
+    {"avail-threshold",    required_argument, 0, 'a'},
+    {"majfault-threshold", required_argument, 0, 'f'},
+    {"help",               no_argument,       0, 'h'},
+    {0, 0, 0, 0}
+  };
+
   int opt;
-  while ((opt = getopt(argc, argv, "i:d:a:f:h")) != -1) {
+  while ((opt = getopt_long(argc, argv, "i:d:a:f:h", long_opts, NULL)) != -1) {
     switch (opt) {
     case 'i': interval = atoi(optarg); break;
     case 'd': duration = atoi(optarg); break;
@@ -784,10 +793,8 @@ int run_mem(int argc, char **argv)
     }
   }
 
-  if (interval < 1) {
-    fprintf(stderr, "采样间隔必须 >= 1\n");
+  if (check_interval(interval) != 0)
     return 1;
-  }
 
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);

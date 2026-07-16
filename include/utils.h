@@ -3,6 +3,7 @@
 
 #include <signal.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/types.h>
 
 struct perf_event_attr;
@@ -29,5 +30,7 @@ void resolve_ip(pid_t pid, unsigned long long ip, char *out_buf, size_t len);
 void reset_map(int map_fd);
 int perf_event_open(struct perf_event_attr *attr, pid_t pid,
                     int cpu, int group_fd, unsigned long flags);
+int check_interval(int interval);
+FILE *open_output(const char *path);
 
 #endif

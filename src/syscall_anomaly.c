@@ -427,10 +427,10 @@ static void usage(const char *prog)
 		"识别高频、高耗时及高错误率的系统调用热点。\n"
 		"\n"
 		"选项:\n"
-		"  -i <秒>           采样间隔（默认: %d）\n"
-		"  -d <秒>           总运行时长，0 表示持续运行（默认: 0）\n"
-		"  -o <文件路径>     输出到文件（默认: 标准输出）\n"
-		"  -h, --help        显示本帮助信息\n"
+		"  -i, --interval <秒>      采样间隔（默认: %d）\n"
+		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
+		"  -h, --help               显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                       # 默认参数运行\n"
@@ -445,7 +445,10 @@ int run_syscall(int argc, char **argv)
 	const char *output_file = NULL;
 
 	static struct option long_opts[] = {
-		{"help", no_argument, 0, 'h'},
+		{"interval", required_argument, 0, 'i'},
+		{"duration", required_argument, 0, 'd'},
+		{"output",   required_argument, 0, 'o'},
+		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
@@ -460,16 +463,12 @@ int run_syscall(int argc, char **argv)
 		}
 	}
 
-	if (interval < 1) {
-		fprintf(stderr, "采样间隔必须 >= 1\n");
+	if (check_interval(interval) != 0)
 		return 1;
-	}
 
-	FILE *out = stdout;
-	if (output_file) {
-		out = fopen(output_file, "w");
-		if (!out) { perror("fopen"); return 1; }
-	}
+	FILE *out = open_output(output_file);
+	if (!out)
+		return 1;
 
 	libbpf_set_print(NULL);
 	signal(SIGINT, on_signal);

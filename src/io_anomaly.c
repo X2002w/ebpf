@@ -754,9 +754,9 @@ static void usage(const char *prog)
 		"采集吞吐、延迟、队列深度等指标。\n"
 		"\n"
 		"选项:\n"
-		"  -i <秒>    采样间隔（默认: %d）\n"
-		"  -d <秒>    总运行时长，0 表示持续运行（默认: 0）\n"
-		"  -h         显示本帮助信息\n"
+		"  -i, --interval <秒>   采样间隔（默认: %d）\n"
+		"  -d, --duration <秒>   总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -h, --help            显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                  # 默认参数运行\n"
@@ -769,8 +769,15 @@ int run_io(int argc, char **argv)
 	int interval = DEFAULT_INTERVAL;
 	int duration = 0;
 
+	static struct option long_opts[] = {
+		{"interval", required_argument, 0, 'i'},
+		{"duration", required_argument, 0, 'd'},
+		{"help",     no_argument,       0, 'h'},
+		{0, 0, 0, 0}
+	};
+
 	int opt;
-	while ((opt = getopt(argc, argv, "i:d:h")) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:h", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
@@ -779,10 +786,8 @@ int run_io(int argc, char **argv)
 		}
 	}
 
-	if (interval < 1) {
-		fprintf(stderr, "采样间隔必须 >= 1\n");
+	if (check_interval(interval) != 0)
 		return 1;
-	}
 
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
