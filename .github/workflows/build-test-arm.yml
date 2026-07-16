@@ -1,0 +1,54 @@
+name: ARM64 Build Test
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - src/**
+      - include/**
+      - Makefile
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ARM64 多平台适配验证: 原生构建 + 冒烟测试
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang llvm make libelf-dev libbpf-dev zlib1g-dev linux-tools-common
+          # runner 内核与 linux-tools 包版本可能不匹配，直接链接实际的 bpftool
+          sudo apt-get install -y "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
+          sudo ln -sf "$(ls -d /usr/lib/linux-tools/*/bpftool | head -1)" /usr/local/sbin/bpftool
+          sudo bpftool version
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 验证二进制
+        run: |
+          test -x ./eebpf
+          ./eebpf --version
+
+      - name: 冒烟测试
+        run: |
+          sudo ./eebpf hot -i 2 -d 4
+          sudo ./eebpf cpu -i 2 -d 4 -p 0
+          sudo ./eebpf mem -i 2 -d 4
+          sudo ./eebpf io -i 2 -d 4
+          sudo ./eebpf lock -i 2 -d 4 -p 0
