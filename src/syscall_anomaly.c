@@ -10,6 +10,7 @@
 #include <bpf/libbpf.h>
 #include "syscall_anomaly.skel.h"
 #include "../include/syscall_anomaly.h"
+#include "../include/syscall_names.h"
 #include "../include/utils.h"
 
 #define DEFAULT_INTERVAL    5
@@ -32,87 +33,46 @@ struct pid_nr_stats {
 
 static const char *syscall_name(unsigned int nr)
 {
-	static const char *table[] = {
-		[0]   = "read",         [1]   = "write",
-		[2]   = "open",         [3]   = "close",
-		[4]   = "stat",         [5]   = "fstat",
-		[6]   = "lstat",        [7]   = "poll",
-		[8]   = "lseek",        [9]   = "mmap",
-		[10]  = "mprotect",     [11]  = "munmap",
-		[12]  = "brk",          [13]  = "rt_sigaction",
-		[14]  = "rt_sigprocmask", [15] = "rt_sigreturn",
-		[16]  = "ioctl",        [17]  = "pread64",
-		[18]  = "pwrite64",     [19]  = "readv",
-		[20]  = "writev",       [21]  = "access",
-		[22]  = "pipe",         [23]  = "select",
-		[24]  = "sched_yield",  [25]  = "mremap",
-		[27]  = "mincore",      [28]  = "madvise",
-		[29]  = "shmget",       [30]  = "shmat",
-		[32]  = "dup",          [33]  = "dup2",
-		[35]  = "nanosleep",    [39]  = "getpid",
-		[41]  = "socket",       [42]  = "connect",
-		[43]  = "accept",       [44]  = "sendto",
-		[45]  = "recvfrom",     [46]  = "sendmsg",
-		[47]  = "recvmsg",      [49]  = "bind",
-		[50]  = "listen",       [51]  = "getsockname",
-		[54]  = "setsockopt",   [55]  = "getsockopt",
-		[56]  = "clone",        [57]  = "fork",
-		[59]  = "execve",       [60]  = "exit",
-		[61]  = "wait4",        [62]  = "kill",
-		[72]  = "fcntl",        [73]  = "flock",
-		[74]  = "fsync",        [75]  = "fdatasync",
-		[78]  = "getdents",     [79]  = "getcwd",
-		[80]  = "chdir",        [82]  = "rename",
-		[83]  = "mkdir",        [84]  = "rmdir",
-		[85]  = "creat",        [87]  = "unlink",
-		[96]  = "gettimeofday", [97]  = "getrlimit",
-		[102] = "getuid",       [104] = "getgid",
-		[131] = "sigaltstack",  [137] = "statfs",
-		[157] = "prctl",        [158] = "arch_prctl",
-		[160] = "setrlimit",    [165] = "mount",
-		[186] = "gettid",       [202] = "futex",
-		[203] = "sched_setaffinity", [204] = "sched_getaffinity",
-		[213] = "epoll_create", [217] = "getdents64",
-		[228] = "clock_gettime", [229] = "clock_getres",
-		[230] = "clock_nanosleep", [231] = "exit_group",
-		[232] = "epoll_wait",   [233] = "epoll_ctl",
-		[234] = "tgkill",       [257] = "openat",
-		[262] = "newfstatat",   [263] = "unlinkat",
-		[264] = "renameat",     [265] = "linkat",
-		[267] = "readlinkat",   [270] = "pselect6",
-		[271] = "ppoll",        [273] = "set_robust_list",
-		[281] = "epoll_pwait",  [284] = "eventfd",
-		[285] = "fallocate",    [291] = "epoll_create1",
-		[298] = "perf_event_open", [302] = "prlimit64",
-		[314] = "sched_setattr", [318] = "getrandom",
-		[319] = "memfd_create", [321] = "bpf",
-		[322] = "execveat",     [332] = "statx",
-		[334] = "rseq",         [435] = "clone3",
-		[436] = "close_range",  [437] = "openat2",
-		[438] = "pidfd_getfd",  [439] = "faccessat2",
-		[440] = "process_madvise", [441] = "epoll_pwait2",
-	};
-
-	if (nr < sizeof(table) / sizeof(table[0]) && table[nr])
-		return table[nr];
+	if (nr < sizeof(syscall_names) / sizeof(syscall_names[0]) &&
+	    syscall_names[nr])
+		return syscall_names[nr];
 
 	static char buf[32];
 	snprintf(buf, sizeof(buf), "syscall_%u", nr);
 	return buf;
 }
 
+// 等待型系统调用: 高耗时是正常语义，不作为异常依据
 static int is_wait_syscall(unsigned int nr)
 {
 	switch (nr) {
-	case 7:   // poll
-	case 23:  // select
-	case 35:  // nanosleep
-	case 230: // clock_nanosleep
-	case 232: // epoll_wait
-	case 270: // pselect6
-	case 271: // ppoll
-	case 281: // epoll_pwait
-	case 441: // epoll_pwait2
+#ifdef __NR_poll
+	case __NR_poll:
+#endif
+#ifdef __NR_select
+	case __NR_select:
+#endif
+#ifdef __NR_epoll_wait
+	case __NR_epoll_wait:
+#endif
+#ifdef __NR_nanosleep
+	case __NR_nanosleep:
+#endif
+#ifdef __NR_clock_nanosleep
+	case __NR_clock_nanosleep:
+#endif
+#ifdef __NR_pselect6
+	case __NR_pselect6:
+#endif
+#ifdef __NR_ppoll
+	case __NR_ppoll:
+#endif
+#ifdef __NR_epoll_pwait
+	case __NR_epoll_pwait:
+#endif
+#ifdef __NR_epoll_pwait2
+	case __NR_epoll_pwait2:
+#endif
 		return 1;
 	default:
 		return 0;
