@@ -13,6 +13,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "../include/report_md.h"
+#include "../include/utils.h"
 
 #define DEFAULT_OUTPUT "report/report.md"
 
@@ -53,77 +54,6 @@ struct stack_entry {
 	int stack_id;
 	unsigned long long count;
 };
-
-struct sys_metrics {
-	double load1, load5, load15;
-	int procs_running;
-	int procs_blocked;
-};
-
-
-// 读取时间
-static void iso_timestamp(char *buf, size_t len)
-{
-	time_t now = time(NULL);
-	struct tm tm;
-	localtime_r(&now, &tm);
-	strftime(buf, len, "%Y-%m-%dT%H:%M:%S", &tm);
-}
-
-// 读取系统统计数据
-static void read_sys_metrics(struct sys_metrics *m)
-{
-	memset(m, 0, sizeof(*m));
-	FILE *f = fopen("/proc/loadavg", "r");
-	if (f) {
-		int running = 0, total = 0;
-		fscanf(f, "%lf %lf %lf %d/%d",
-		       &m->load1, &m->load5, &m->load15, &running, &total);
-		fclose(f);
-	}
-	f = fopen("/proc/stat", "r");
-	if (f) {
-		char line[128];
-		while (fgets(line, sizeof(line), f)) {
-			if (sscanf(line, "procs_running %d", &m->procs_running) == 1)
-				continue;
-			if (sscanf(line, "procs_blocked %d", &m->procs_blocked) == 1)
-				break;
-		}
-		fclose(f);
-	}
-}
-
-// 定位调用栈ip
-static void resolve_ip(int pid, unsigned long long ip, char *out_buf, size_t len)
-{
-	char path[64];
-	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) {
-		snprintf(out_buf, len, "0x%llx", ip);
-		return;
-	}
-	char line[512];
-	while (fgets(line, sizeof(line), f)) {
-		unsigned long start, end, offset, inode;
-		char perms[8], name[256] = "";
-		int n = sscanf(line, "%lx-%lx %7s %lx %*x:%*x %ld %255s",
-			       &start, &end, perms, &offset, &inode, name);
-		if (n < 3) continue;
-		if (ip >= start && ip < end) {
-			if (n >= 5 && name[0] != '\0')
-				snprintf(out_buf, len, "`%s+0x%llx`", name,
-					 (unsigned long long)(ip - start));
-			else
-				snprintf(out_buf, len, "0x%llx", ip);
-			fclose(f);
-			return;
-		}
-	}
-	fclose(f);
-	snprintf(out_buf, len, "0x%llx", ip);
-}
 
 static int cmp_cpu(const void *a, const void *b)
 {

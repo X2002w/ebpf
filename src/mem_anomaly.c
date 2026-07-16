@@ -132,19 +132,6 @@ static double pct(unsigned long long part, unsigned long long whole)
   return whole ? (double)part / (double)whole * 100.0 : 0.0;
 }
 
-static void read_comm(unsigned int pid, char *buf, size_t len)
-{
-  char path[64];
-  snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-  FILE *f = fopen(path, "r");
-  if (!f) { snprintf(buf, len, "?"); return; }
-  if (fgets(buf, len, f))
-    buf[strcspn(buf, "\n")] = '\0';
-  else
-    snprintf(buf, len, "?");
-  fclose(f);
-}
-
 static int read_proc_flt(unsigned int pid,
                          unsigned long long *minflt,
                          unsigned long long *majflt)

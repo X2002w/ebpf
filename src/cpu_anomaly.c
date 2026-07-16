@@ -71,32 +71,11 @@ struct stack_entry {
 
 #include "../include/utils.h"
 
-// ─── perf_event_open 系统调用封装 ─────────────────────────────────
-static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
-                           int cpu, int group_fd, unsigned long flags)
-{
-	return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
-}
-
 // ─── libbpf 日志 ─────────────────────────────────────────────────
 static int print_fn(enum libbpf_print_level lvl, const char *fmt, va_list ap)
 {
 	if (lvl == LIBBPF_DEBUG) return 0;
 	return vfprintf(stderr, fmt, ap);
-}
-
-// ─── 读取 /proc/<pid>/comm ───────────────────────────────────────
-static void read_comm(__u32 pid, char *buf, size_t len)
-{
-	char path[64];
-	snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) { snprintf(buf, len, "<exited>"); return; }
-	if (fgets(buf, len, f))
-		buf[strcspn(buf, "\n")] = '\0';
-	else
-		snprintf(buf, len, "<?>");
-	fclose(f);
 }
 
 // ─── 收集 map 中所有进程统计 ─────────────────────────────────────
@@ -138,71 +117,6 @@ static int collect_procs(int map_fd, struct proc_info **out, int *out_count)
 
 	*out_count = count;
 	return 0;
-}
-
-// ─── 重置 pid_stats map ─────────────────────────────────────────
-static void reset_pid_stats(int map_fd)
-{
-	__u32 key = 0, next_key;
-	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-		bpf_map_delete_elem(map_fd, &next_key);
-		key = next_key;
-	}
-}
-
-// 系统负载 与 run queue 深度 
-// /proc/loadavg 与 /proc/stat 是 procfs 标准接口，Linux 2.6+ 所有发行版通用
-struct sys_metrics {
-  // 系统 1, 5, 15分钟时的平均负载
-	double load1, load5, load15;
-
-  // 瞬时 run queue 深度 -> 系统正在运行or可运行的进程数
-	int procs_running;    
-
-  // 当前被阻塞的进程数(wait IO)
-	int procs_blocked;    
-};
-
-
-// 读取系统指标
-static int read_sys_metrics(struct sys_metrics *m)
-{
-	memset(m, 0, sizeof(*m));
-
-	FILE *f = fopen("/proc/loadavg", "r");
-	if (f) {
-
-    // 当前运行进程 / 总进程数
-		int running = 0, total = 0;
-		fscanf(f, "%lf %lf %lf %d/%d",
-		       &m->load1, &m->load5, &m->load15,
-		       &running, &total);
-		fclose(f);
-	}
-
-	// /proc/stat 提供更精确的瞬时值
-	f = fopen("/proc/stat", "r");
-	if (f) {
-		char line[128];
-		while (fgets(line, sizeof(line), f)) {
-			if (sscanf(line, "procs_running %d", &m->procs_running) == 1)
-				continue;
-			if (sscanf(line, "procs_blocked %d", &m->procs_blocked) == 1)
-				break;
-		}
-		fclose(f);
-	}
-	return 0;
-}
-
-// ─── 重置 stack_counts map ──────────────────────────────────────
-static void reset_stack_counts(int map_fd)
-{
-	__u32 key = 0, next_key;
-	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-		bpf_map_delete_elem(map_fd, &next_key);
-		key = next_key;
-	}
 }
 
 // ─── CPU% 比较 (降序) ────────────────────────────────────────────
@@ -310,48 +224,7 @@ static void check_scheduler_info(struct cpu_anomaly_bpf *skel,
   bpf_map_lookup_elem(bpf_map__fd(skel->maps.sched_class_check), &zero, &fair_count);
 }
 
-// 将 IP 地址解析为模块名+偏移 
-static void resolve_ip(pid_t pid, __u64 ip, char *out_buf, size_t len)
-{
-	char path[64];
-
-  // 根据pid读取 指定map
-	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) {
-		snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
-		return;
-	}
-
-	char line[512];
-	while (fgets(line, sizeof(line), f)) {
-		unsigned long start, end, offset, inode;
-		char perms[8], name[256] = "";
-		// /proc/pid/maps数据格式: start-end perms offset dev inode [name]
-		int n = sscanf(line, "%lx-%lx %7s %lx %*x:%*x %ld %255s",
-			       &start, &end, perms, &offset, &inode, name);
-		if (n < 3) continue;
-
-		if (ip >= start && ip < end) {
-			// 跳过不可执行区域
-			if (n >= 5 && name[0] != '\0')
-				snprintf(out_buf, len, "%s+0x%llx", name,
-					 (unsigned long long)(ip - start));
-			else if (inode == 0)
-				snprintf(out_buf, len, "[vdso/vvar] 0x%llx",
-					 (unsigned long long)ip);
-			else
-				snprintf(out_buf, len, "[anon:%lx] 0x%llx",
-					 inode, (unsigned long long)ip);
-			fclose(f);
-			return;
-		}
-	}
-	fclose(f);
-	snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
-}
-
-// 输出一条调用栈链路 
+// 输出一条调用栈链路
 static void print_call_stack(FILE *out, int stackmap_fd, __s32 stack_id,
 			     pid_t resolve_pid, const char *prefix)
 {
@@ -1126,9 +999,9 @@ int run_cpu(int argc, char **argv)
 		free(stacks);
 
 		// 重置统计
-		reset_pid_stats(stats_fd);
+		reset_map(stats_fd);
 		if (profile_enabled)
-			reset_stack_counts(scounts_fd);
+			reset_map(scounts_fd);
 
 		if (duration > 0 && time(NULL) - start >= duration)
 			break;

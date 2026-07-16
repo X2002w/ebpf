@@ -185,17 +185,6 @@ static int cmp_pid(const void *a, const void *b)
 	       (pa->total_count > pb->total_count);
 }
 
-static void read_comm(unsigned int pid, char *buf, size_t len)
-{
-	char path[64];
-	snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) { snprintf(buf, len, "<exited>"); return; }
-	if (fgets(buf, len, f)) buf[strcspn(buf, "\n")] = '\0';
-	else snprintf(buf, len, "<?>");
-	fclose(f);
-}
-
 static int collect_pid_summary(int map_fd, struct pid_summary **out, int *n)
 {
 	int cap = 256, cnt = 0;
@@ -418,15 +407,6 @@ static void print_report(FILE *out,
 		fprintf(out, "  (当前系统调用指标在正常范围内)\n");
 
 	fflush(out);
-}
-
-static void reset_map(int map_fd)
-{
-	unsigned int key = 0, next;
-	while (bpf_map_get_next_key(map_fd, &key, &next) == 0) {
-		bpf_map_delete_elem(map_fd, &next);
-		key = next;
-	}
 }
 
 static void reset_u64_map(int map_fd)
