@@ -55,8 +55,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-system-x86 pipx
-          pipx install virtme-ng
-          pipx ensurepath
+          pipx install --force virtme-ng
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: 安装 Clang 19 并构建 eebpf
         run: |
@@ -73,7 +73,7 @@ jobs:
 
       - name: 冒烟测试 (内核 ${{ matrix.kernel }})
         run: |
-          ~/.local/bin/vng -r kernel/vmlinuz --cpus 2 --memory 4G --user root -- \
+          vng -r kernel/vmlinuz --cpus 2 --memory 4G --user root -- \
             bash -c '
             set -e
             uname -r
