@@ -31,7 +31,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang llvm make libelf-dev libbpf-dev zlib1g-dev
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+          # ubuntu 24.04 默认 clang 18 的 BPF 后端编译本项目会崩溃
+          # (unimplemented opcode)，与构建镜像保持一致使用 LLVM 19
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+          clang --version
 
       # 各发行版 bpftool 打包方式不一，从源码构建保证可用且行为一致
       - name: 源码构建 bpftool
