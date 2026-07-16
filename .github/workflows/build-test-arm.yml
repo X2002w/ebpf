@@ -31,10 +31,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang llvm make libelf-dev libbpf-dev zlib1g-dev linux-tools-common
-          # runner 内核与 linux-tools 包版本可能不匹配，直接链接实际的 bpftool
-          sudo apt-get install -y "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
-          sudo ln -sf "$(ls -d /usr/lib/linux-tools/*/bpftool | head -1)" /usr/local/sbin/bpftool
+            clang llvm make libelf-dev libbpf-dev zlib1g-dev
+
+      # 各发行版 bpftool 打包方式不一，从源码构建保证可用且行为一致
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
           sudo bpftool version
 
       - name: Build
