@@ -605,7 +605,6 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
   }
 
   const char *anomaly_type, *root_cause;
-  int is_real_anom = 1;
   if (flag_oom) {
     anomaly_type = "内存耗尽 (OOM)";
     root_cause = "可用内存耗尽触发 OOM Killer, 进程被强制终止 — "
@@ -633,7 +632,6 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
     root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, "
                  "暂未形成抖动，持续监控";
-    is_real_anom = 0;
   } else if (flag_lowmem) {
     anomaly_type = "内存高占用";
     root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
