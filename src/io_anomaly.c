@@ -1206,11 +1206,14 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 
 		if (diag_seq == 0) {
 			json_indent(out, 4);
-			fprintf(out, "{\"target\": \"I/O 子系统\", \"is_anomaly\": false, "
-				"\"subtype\": \"正常\", "
-				"\"root_cause\": \"未检测到明显 I/O 异常\", "
-				"\"suggestion\": \"所有设备指标在正常范围内\"}\n");
-		}
+			fprintf(out, "{\n");
+			json_kv_str(out, 5, "target", "I/O 子系统", 0);
+			json_kv_bool(out, 5, "is_anomaly", 0, 0);
+			json_kv_str(out, 5, "subtype", "正常", 0);
+			json_kv_str(out, 5, "root_cause", "未检测到明显 I/O 异常", 0);
+			json_kv_str(out, 5, "suggestion", "所有设备指标在正常范围内", 1);
+			fprintf(out, "          }");
+			}
 		fprintf(out, "\n");
 		json_arr_end(out, 3, 1);
 		json_obj_end(out, 2, 1);

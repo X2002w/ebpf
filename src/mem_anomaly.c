@@ -912,10 +912,13 @@ static void print_mem_json_report(const struct meminfo *m,
 		fprintf(out, "          \"findings\": [\n");
 
 		if (triggers == 0) {
-			fprintf(out, "            {\"target\": \"系统内存\", \"is_anomaly\": false, "
-				"\"subtype\": \"正常\", "
-				"\"root_cause\": \"未检测到明显内存抖动\", "
-				"\"suggestion\": \"系统内存状态正常\"}\n");
+			fprintf(out, "            {\n");
+			json_kv_str(out, 4, "target", "系统内存", 0);
+			json_kv_bool(out, 4, "is_anomaly", 0, 0);
+			json_kv_str(out, 4, "subtype", "正常", 0);
+			json_kv_str(out, 4, "root_cause", "未检测到明显内存抖动", 0);
+			json_kv_str(out, 4, "suggestion", "系统内存状态正常", 1);
+			fprintf(out, "            }");
 		} else {
 			const char *anomaly_type, *root_cause;
 			int is_real_anom = 1;
