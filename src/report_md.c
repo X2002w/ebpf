@@ -264,14 +264,11 @@ static void render_diagnosis(FILE *in, FILE *out, const char *title)
 		int in_km = 0, in_ev = 0;
 
 		while (fgets(line, sizeof(line), in)) {
-			if (has(line, "}") && !has(line, "{")) break; // end of finding
-
 			if (has(line, "\"key_metrics\":")) { in_km = 1; continue; }
 			if (has(line, "\"evidence\":")) { in_ev = 1; continue; }
 
 			if (in_km) {
 				if (has(line, "}")) { in_km = 0; continue; }
-				// key_metrics is a flat object: "key": "value"
 				if (nkm < MAX_COLS) {
 					if (extract_str_n(line, 0, km[nkm].k, sizeof(km[0].k)) &&
 					    extract_str_n(line, 2, km[nkm].v, sizeof(km[0].v)))
@@ -288,6 +285,8 @@ static void render_diagnosis(FILE *in, FILE *out, const char *title)
 				}
 				continue;
 			}
+
+			if (has(line, "}") && !has(line, "{")) break;
 
 			if (has(line, "\"target\":")) extract_str(line, target, sizeof(target));
 			if (has(line, "\"is_anomaly\":")) is_anomaly = extract_bool(line);
