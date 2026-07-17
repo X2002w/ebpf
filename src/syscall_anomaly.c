@@ -12,6 +12,8 @@
 #include "../include/syscall_anomaly.h"
 #include "../include/syscall_names.h"
 #include "../include/utils.h"
+#include "../include/report_json.h"
+#include "../include/report_md.h"
 
 #define DEFAULT_INTERVAL    5
 #define FREQ_WARN_PER_SEC   10000
@@ -378,6 +380,282 @@ static void reset_u64_map(int map_fd)
 	}
 }
 
+// 统一 JSON 报告
+static void print_syscall_json_report(struct syscall_entry *entries, int n,
+				       struct pid_summary *pids, int pn,
+				       unsigned long long interval_ns)
+{
+	const char *path = "report/hot.json";
+	FILE *out = json_open(path);
+	if (!out) return;
+
+	char ts[32], buf[256];
+	iso_timestamp(ts, sizeof(ts));
+	double duration_s = (double)interval_ns / 1e9;
+
+	unsigned long long grand_total = 0, grand_ns = 0, grand_err = 0;
+	for (int i = 0; i < n; i++) {
+		grand_total += entries[i].stats.count;
+		grand_ns += entries[i].stats.total_ns;
+		grand_err += entries[i].stats.err_count;
+	}
+
+	fprintf(out, "{\n");
+	json_kv_str(out, 1, "module", "hot", 0);
+	json_kv_str(out, 1, "timestamp", ts, 0);
+	json_kv_double(out, 1, "duration_s", duration_s, "%.1f", 0);
+
+	json_obj_begin(out, 1, "system");
+	snprintf(buf, sizeof(buf), "%llu", grand_total);
+	json_kv_str(out, 2, "系统调用总数", buf, 0);
+	snprintf(buf, sizeof(buf), "%.1fms", (double)grand_ns / 1e6);
+	json_kv_str(out, 2, "总耗时", buf, 0);
+	snprintf(buf, sizeof(buf), "%llu", grand_err);
+	json_kv_str(out, 2, "错误数", buf, 1);
+	json_obj_end(out, 1, 0);
+
+	json_arr_begin(out, 1, "sections");
+
+	// section: top by frequency
+	qsort(entries, n, sizeof(struct syscall_entry), cmp_count);
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "高频系统调用 Top-10", 0);
+		fprintf(out, "          \"columns\": [\"系统调用\", \"调用次数\", \"每秒\", \"avg(us)\", \"max(ms)\", \"错误率\", \"标记\"],\n");
+		json_arr_begin(out, 3, "rows");
+		int top = n < 10 ? n : 10;
+		for (int i = 0; i < top; i++) {
+			struct syscall_stats *s = &entries[i].stats;
+			double rate = (double)s->count / duration_s;
+			double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
+			double max_ms = (double)s->max_ns / 1e6;
+			double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
+			const char *flag = rate > 10000 ? "高频" : avg_us > 10000 ? "高耗时" : err_pct > 10 ? "高错误率" : "";
+			json_indent(out, 4);
+			fprintf(out, "[\"%s\", \"%llu\", \"%.0f\", \"%.0f\", \"%.1f\", \"%.1f%%\", \"%s\"]%s\n",
+				syscall_name(entries[i].nr), s->count, rate, avg_us, max_ms, err_pct, flag,
+				i < top - 1 ? "," : "");
+		}
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: top by latency
+	qsort(entries, n, sizeof(struct syscall_entry), cmp_lat);
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "高耗时系统调用 Top-10", 0);
+		fprintf(out, "          \"columns\": [\"系统调用\", \"调用次数\", \"每秒\", \"avg(us)\", \"max(ms)\", \"错误率\", \"标记\"],\n");
+		json_arr_begin(out, 3, "rows");
+		int top = n < 10 ? n : 10;
+		for (int i = 0; i < top; i++) {
+			struct syscall_stats *s = &entries[i].stats;
+			double rate = (double)s->count / duration_s;
+			double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
+			double max_ms = (double)s->max_ns / 1e6;
+			double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
+			const char *flag = avg_us > 10000 ? "高耗时" : "";
+			json_indent(out, 4);
+			fprintf(out, "[\"%s\", \"%llu\", \"%.0f\", \"%.0f\", \"%.1f\", \"%.1f%%\", \"%s\"]%s\n",
+				syscall_name(entries[i].nr), s->count, rate, avg_us, max_ms, err_pct, flag,
+				i < top - 1 ? "," : "");
+		}
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: process summary table (sorted by count desc)
+	qsort(pids, pn, sizeof(struct pid_summary), cmp_pid);
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "进程系统调用汇总", 0);
+		fprintf(out, "          \"columns\": [\"TID\", \"进程\", \"调用次数\", \"/s\", \"avg(us)\", \"max(ms)\"],\n");
+		json_arr_begin(out, 3, "rows");
+
+		int ptop = pn < 15 ? pn : 15;
+		for (int i = 0; i < ptop; i++) {
+			struct pid_summary *p = &pids[i];
+			double rate = (double)p->total_count / duration_s;
+			double avg_us = p->total_count ?
+				(double)p->total_ns / p->total_count / 1000.0 : 0;
+			double max_ms = (double)p->max_ns / 1e6;
+
+			json_indent(out, 4);
+			fprintf(out, "[\"%u\", \"%s\", \"%llu\", \"%.0f\", \"%.0f\", \"%.1f\"]%s\n",
+				p->tid, p->comm, p->total_count, rate, avg_us, max_ms,
+				i < ptop - 1 ? "," : "");
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: diagnosis
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "diagnosis", 0);
+		json_kv_str(out, 3, "title", "诊断结论", 0);
+		json_arr_begin(out, 3, "findings");
+
+		// 按调用次数排序，诊断 syscall 级别异常
+		qsort(entries, n, sizeof(struct syscall_entry), cmp_count);
+		int diag = 0;
+
+		for (int i = 0; i < n; i++) {
+			struct syscall_stats *s = &entries[i].stats;
+			double rate = (double)s->count / duration_s;
+			double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
+			double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
+
+			if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US && err_pct <= ERR_RATE_WARN * 100)
+				continue;
+
+			const char *type = NULL;
+			const char *root_cause = NULL;
+			const char *suggestion = NULL;
+
+			if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US) {
+				type = "高频 + 高耗时";
+				root_cause = "系统调用频繁调用且耗时偏高";
+				suggestion = "检查调用频率和阻塞原因，考虑异步化或批量操作";
+			} else if (rate > FREQ_WARN_PER_SEC) {
+				type = "高频调用";
+				root_cause = "事件循环或 busy-poll 导致短耗时系统调用高频重复";
+				suggestion = "检查轮询逻辑，改用阻塞+超时或事件驱动模式";
+			} else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr)) {
+				type = "高耗时 (事件等待)";
+				root_cause = "事件等待型系统调用，高耗时说明无事件到达或超时设置较长";
+				suggestion = "属正常等待行为；若期望快速响应，检查 fd 活跃度和超时参数";
+			} else if (avg_us > LAT_WARN_US) {
+				type = "高耗时";
+				root_cause = "系统调用阻塞等待 I/O、锁或网络资源";
+				suggestion = "排查底层资源竞争，考虑异步 I/O 或批量操作";
+			} else {
+				type = "高错误率";
+				root_cause = "系统调用参数错误或资源不可用";
+				suggestion = "检查调用参数合法性及系统资源状态";
+			}
+
+			if (diag > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+
+			char tbuf[128];
+			snprintf(tbuf, sizeof(tbuf), "%s (syscall)", syscall_name(entries[i].nr));
+			json_kv_str(out, 5, "target", tbuf, 0);
+			json_kv_bool(out, 5, "is_anomaly", 1, 0);
+			json_kv_str(out, 5, "subtype", type, 0);
+			json_kv_str(out, 5, "root_cause", root_cause, 0);
+			json_kv_str(out, 5, "suggestion", suggestion, 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%llu (%.0f/s)", s->count, rate);
+			json_kv_str(out, 6, "调用次数", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f us", avg_us);
+			json_kv_str(out, 6, "平均耗时", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f ms", (double)s->max_ns / 1e6);
+			json_kv_str(out, 6, "最大耗时", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f%%", err_pct);
+			json_kv_str(out, 6, "错误率", kmbuf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us\"\n",
+				syscall_name(entries[i].nr), s->count, rate, avg_us);
+			fprintf(out, "            ]\n");
+
+			diag++;
+			json_obj_end(out, 4, 1);
+		}
+
+		// 进程级别诊断
+		qsort(pids, pn, sizeof(struct pid_summary), cmp_pid);
+		int pdiag = 0;
+		for (int i = 0; i < pn && pdiag < 10; i++) {
+			struct pid_summary *p = &pids[i];
+			double rate = (double)p->total_count / duration_s;
+			double avg_us = p->total_count ?
+				(double)p->total_ns / p->total_count / 1000.0 : 0;
+
+			if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+				continue;
+
+			const char *ptype = avg_us > LAT_WARN_US ? "高耗时" : "高频调用";
+			const char *proot_cause = NULL;
+			const char *psuggestion = NULL;
+
+			if (avg_us > LAT_WARN_US && is_wait_syscall(p->top_lat_nr)) {
+				proot_cause = "线程主要时间在事件等待，属正常 I/O 多路复用行为";
+				psuggestion = "无明显异常；若需降低时延，检查 fd 活跃度或调小超时";
+			} else if (avg_us > LAT_WARN_US) {
+				proot_cause = "线程大量时间消耗在阻塞型系统调用";
+				psuggestion = "分析调用路径，考虑异步化或减少阻塞时间";
+			} else {
+				proot_cause = "线程频繁调用短耗时系统调用，可能存在轮询模式";
+				psuggestion = "审查调用频率，调整轮询间隔或切换事件驱动";
+			}
+
+			if (diag > 0 || pdiag > 0) {
+				if (diag > 0) fprintf(out, ",\n");
+				diag++;
+			}
+
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+
+			char tbuf[128];
+			snprintf(tbuf, sizeof(tbuf), "%s (TID %u)", p->comm, p->tid);
+			json_kv_str(out, 5, "target", tbuf, 0);
+			json_kv_bool(out, 5, "is_anomaly", 1, 0);
+			json_kv_str(out, 5, "subtype", ptype, 0);
+			json_kv_str(out, 5, "root_cause", proot_cause, 0);
+			json_kv_str(out, 5, "suggestion", psuggestion, 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%llu (%.0f/s)", p->total_count, rate);
+			json_kv_str(out, 6, "系统调用总数", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f us", avg_us);
+			json_kv_str(out, 6, "平均耗时", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%llu 次", p->top_nr_count);
+			json_kv_str(out, 6, "最多调用", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%s (%.1f ms)",
+				syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
+			json_kv_str(out, 6, "耗时最多", kmbuf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s), 最多调用 %s (%llu次), 耗时最多 %s (%.1fms)\"\n",
+				p->tid, p->comm, p->total_count, rate,
+				syscall_name(p->top_nr), p->top_nr_count,
+				syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
+			fprintf(out, "            ]\n");
+
+			pdiag++;
+			json_obj_end(out, 4, 1);
+		}
+
+		if (diag == 0 && pdiag == 0) {
+			fprintf(out, "            {\"target\": \"系统调用\", \"is_anomaly\": false, "
+				"\"subtype\": \"正常\", "
+				"\"root_cause\": \"未检测到明显热点\", "
+				"\"suggestion\": \"当前系统调用指标在正常范围内\"}\n");
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 1);
+	}
+
+	json_arr_end(out, 1, 1);
+	fprintf(out, "}\n");
+	json_close(out);
+	fprintf(stderr, "[*] JSON 报告已写入 %s\n", path);
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -472,14 +750,19 @@ int run_syscall(int argc, char **argv)
 
 		print_report(out, entries, n, pids, pn, interval_ns);
 
+		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
+			print_syscall_json_report(entries, n, pids, pn, interval_ns);
+			json_to_markdown("report/hot.json", "report/hot.md");
+		}
+
 		free(entries);
 		free(pids);
 
+		if (exiting || (duration > 0 && time(NULL) - start >= duration))
+			break;
+
 		reset_map(sys_stats_fd);
 		reset_u64_map(pid_nr_stats_fd);
-
-		if (duration > 0 && time(NULL) - start >= duration)
-			break;
 	}
 
 	fprintf(stderr, "[*] 正在退出...\n");
