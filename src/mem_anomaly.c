@@ -698,18 +698,18 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     fprintf(out, "    %d. 换入 %.0f 页/s、换出 %.0f 页/s, Swap 正在活跃换页\n",
             ev++, r->pswpin_ps, r->pswpout_ps);
   if (flag_refault)
-    fprintf(out, "    %d. refault %.0f 页/s, 刚回收的页被立即读回, 缓存严重不足\n",
-            ev++, r->refault_ps);
+    fprintf(out, "    %d. refault %.0f 页/s (阈值 %.0f), 刚回收的页被立即读回, 缓存严重不足\n",
+            ev++, r->refault_ps, DEF_REFAULT_HI);
   if (flag_direct)
-    fprintf(out, "    %d. 触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms\n",
-            ev++, sys->direct_reclaim_cnt, avg_stall_ms);
+    fprintf(out, "    %d. 触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms (阈值 %.1f ms)\n",
+            ev++, sys->direct_reclaim_cnt, avg_stall_ms, DIRECT_STALL_HI_MS);
   if (flag_fault)
     fprintf(out, "    %d. 缺页速率 %.0f 次/s, 超出阈值 %.0f, 内存访问密集\n",
             ev++, r->pgfault_ps, FAULT_HI_PS);
   if (flag_retry) {
     double ratio = au->raw ? (double)au->retry / (double)au->raw * 100.0 : 0.0;
-    fprintf(out, "    %d. 缺页重试差 %.0f 次/s (占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\n",
-            ev++, retry_ps, ratio);
+    fprintf(out, "    %d. 缺页重试差 %.0f 次/s (阈值 %.0f, 占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\n",
+            ev++, retry_ps, RETRY_HI_PS, ratio);
   }
   if (nrow > 0 && rows[0].matched && rows[0].majflt_d > 0)
     fprintf(out, "    %d. 主导进程 %s(%u) major fault 最高: %.0f 次/s\n",
