@@ -31,7 +31,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
           # ubuntu 24.04 默认 clang 18 的 BPF 后端编译本项目会崩溃
           # (unimplemented opcode)，与构建镜像保持一致使用 LLVM 19
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
@@ -58,8 +58,46 @@ jobs:
 
       - name: 冒烟测试
         run: |
+          set -e
+
+          # hot: 系统调用热点 (CPU 压力触发高频 syscall)
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
           sudo ./eebpf hot -i 2 -d 4
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # cpu: CPU 计算压力
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
           sudo ./eebpf cpu -i 2 -d 4 -p 0
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # mem: 内存分配压力
+          stress-ng --vm 2 --vm-bytes 128M &
+          SPID=$!
+          sleep 1
           sudo ./eebpf mem -i 2 -d 4
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # io: I/O 压力
+          stress-ng --hdd 2 --hdd-bytes 32M &
+          SPID=$!
+          sleep 1
           sudo ./eebpf io -i 2 -d 4
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # lock: futex 锁竞争
+          stress-ng --futex 2 &
+          SPID=$!
+          sleep 1
           sudo ./eebpf lock -i 2 -d 4 -p 0
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          echo "ALL PASS"

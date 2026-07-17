@@ -61,7 +61,7 @@ jobs:
       - name: 安装 Clang 19 并构建 eebpf
         run: |
           sudo apt-get install -y --no-install-recommends \
-            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
           sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
           sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
@@ -77,9 +77,46 @@ jobs:
             bash -c '
             set -e
             uname -r
-            ./eebpf hot  -i 2 -d 4
-            ./eebpf cpu  -i 2 -d 4 -p 0
-            ./eebpf mem  -i 2 -d 4
+
+            # hot: 系统调用热点 (CPU 压力触发高频 syscall)
+            stress-ng --cpu 2 &
+            SPID=$!
+            sleep 1
+            ./eebpf hot -i 2 -d 4
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # cpu: CPU 计算压力
+            stress-ng --cpu 2 &
+            SPID=$!
+            sleep 1
+            ./eebpf cpu -i 2 -d 4 -p 0
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # mem: 内存分配压力
+            stress-ng --vm 2 --vm-bytes 128M &
+            SPID=$!
+            sleep 1
+            ./eebpf mem -i 2 -d 4
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # io: I/O 压力
+            stress-ng --hdd 2 --hdd-bytes 32M &
+            SPID=$!
+            sleep 1
+            ./eebpf io -i 2 -d 4
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # lock: futex 锁竞争
+            stress-ng --futex 2 &
+            SPID=$!
+            sleep 1
             ./eebpf lock -i 2 -d 4 -p 0
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
             echo "ALL PASS"
           '
