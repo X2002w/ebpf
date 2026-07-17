@@ -605,6 +605,7 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
   }
 
   const char *anomaly_type, *root_cause;
+  int is_real_anom = 1;
   if (flag_oom) {
     anomaly_type = "内存耗尽 (OOM)";
     root_cause = "可用内存耗尽触发 OOM Killer, 进程被强制终止 — "
@@ -629,9 +630,10 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     root_cause = "缺页速率与重试率双高, handle_mm_fault 大量返回 RETRY — "
                  "进程频繁触碰刚映射/刚换出的页, MM 锁竞争或 I/O 缺页密集";
   } else if (flag_retry) {
-    anomaly_type = "内存抖动 (缺页重试)";
+    anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
     root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, "
-                 "虽未触发回收但已产生访问延迟";
+                 "暂未形成抖动，持续监控";
+    is_real_anom = 0;
   } else if (flag_lowmem) {
     anomaly_type = "内存高占用";
     root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
@@ -916,6 +918,7 @@ static void print_mem_json_report(const struct meminfo *m,
 				"\"suggestion\": \"系统内存状态正常\"}\n");
 		} else {
 			const char *anomaly_type, *root_cause;
+			int is_real_anom = 1;
 			if (flag_oom) {
 				anomaly_type = "内存耗尽 (OOM)";
 				root_cause = "可用内存耗尽触发 OOM Killer, 进程被强制终止 — 内存申请已超出物理容量, 需扩容或定位泄漏进程";
@@ -935,8 +938,9 @@ static void print_mem_json_report(const struct meminfo *m,
 				anomaly_type = "内存抖动 (缺页颠簸)";
 				root_cause = "缺页速率与重试率双高, handle_mm_fault 大量返回 RETRY — 进程频繁触碰刚映射/刚换出的页, MM 锁竞争或 I/O 缺页密集";
 			} else if (flag_retry) {
-				anomaly_type = "内存抖动 (缺页重试)";
-				root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, 虽未触发回收但已产生访问延迟";
+				anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
+				root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, 暂未形成抖动，持续监控";
+				is_real_anom = 0;
 			} else if (flag_lowmem) {
 				anomaly_type = "内存高占用";
 				root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
@@ -961,7 +965,7 @@ static void print_mem_json_report(const struct meminfo *m,
 
 			fprintf(out, "            {\n");
 			fprintf(out, "              \"target\": \"%s\",\n", assoc);
-			fprintf(out, "              \"is_anomaly\": true,\n");
+			fprintf(out, "              \"is_anomaly\": %s,\n", is_real_anom ? "true" : "false");
 			fprintf(out, "              \"subtype\": \"%s\",\n", anomaly_type);
 			fprintf(out, "              \"root_cause\": \"%s\",\n", root_cause);
 			fprintf(out, "              \"suggestion\": \"结合 dmesg/OOM 日志进一步排查，关注 top 进程内存增长趋势\",\n");
