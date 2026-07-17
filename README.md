@@ -17,5 +17,9 @@
 - [ ] io缓存失效 <- 内存抖动佐证 (多维关联分析)
 - [x] 重构项目
 - [x] cicd自动构建发布镜像
-- [ ] 将下载LLVM从build test action移到dockr build action 中
+- [x] 将下载LLVM从build test action移到dockr build action 中
+- [ ] 将各部分监测程序的公共宏放置再一起 or 使用config文件编辑
+- [ ] 使用sqlite存储历史数据
+- [ ] 加前瞻性6.1, 6.6, 6.12, stable —— stable 标签自动追新内核，将来内核更新破坏兼容性时 CI 会第一时间红 
+- [ ] 重构文档输出报告
 
