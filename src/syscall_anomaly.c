@@ -642,12 +642,15 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 5, 0);
 
 			fprintf(out, "            \"evidence\": [\n");
-			fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s), 最多调用 %s (%llu次), 耗时最多 %s (%.1fms)\"\n",
-				p->tid, p->comm, p->total_count, rate,
-				syscall_name(p->top_nr), p->top_nr_count,
-				syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
+			if (avg_us > LAT_WARN_US)
+				fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s), 平均耗时 %.0f us (阈值 %d us), 耗时最多 %s (%.1fms)\"\n",
+					p->tid, p->comm, p->total_count, rate, avg_us, LAT_WARN_US,
+					syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
+			else
+				fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s, 阈值 %d/s), 最多调用 %s (%llu次)\"\n",
+					p->tid, p->comm, p->total_count, rate, FREQ_WARN_PER_SEC,
+					syscall_name(p->top_nr), p->top_nr_count);
 			fprintf(out, "            ]\n");
-
 			pdiag++;
 			json_obj_end(out, 4, 1);
 		}
