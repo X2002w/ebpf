@@ -718,9 +718,9 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     if (flag_qwait)
       fprintf(out, "    %d. 平均排队等待 %.1f us 显著偏高（阈值 %.0f us），IO 在调度层堆积\n", ev_n++, avg_qwait_us, qwait_hi);
     if (flag_cache)
-      fprintf(out, "    %d. 缓存失效率 %.1f%%，同块数据在 %dms 内被重复读取 %llu 次\n", ev_n++, miss_rate, 500, val.cache_miss_count);
+      fprintf(out, "    %d. 缓存失效率 %.1f%% (阈值 10.0%%)，同块数据在 %dms 内被重复读取 %llu 次\n", ev_n++, miss_rate, 500, val.cache_miss_count);
     if (flag_hot)
-      fprintf(out, "    %d. Top-3 热点文件占全局 IOPS 的 %.1f%%，访问高度集中\n", ev_n++, top3_pct);
+      fprintf(out, "    %d. Top-3 热点文件占全局 IOPS 的 %.1f%% (阈值 70%%)，访问高度集中\n", ev_n++, top3_pct);
     if (!flag_lat && !flag_qd && !flag_qwait && !flag_cache)
       fprintf(out, "    %d. 指标波动幅度较小，建议延长观测窗口确认趋势\n", ev_n++);
 
