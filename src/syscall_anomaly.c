@@ -655,12 +655,16 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 4, 1);
 		}
 
-		if (diag == 0 && pdiag == 0) {
-			fprintf(out, "            {\"target\": \"系统调用\", \"is_anomaly\": false, "
-				"\"subtype\": \"正常\", "
-				"\"root_cause\": \"未检测到明显热点\", "
-				"\"suggestion\": \"当前系统调用指标在正常范围内\"}\n");
-		}
+			if (diag == 0 && pdiag == 0) {
+				json_indent(out, 4);
+				fprintf(out, "{\n");
+				json_kv_str(out, 5, "target", "系统调用", 0);
+				json_kv_bool(out, 5, "is_anomaly", 0, 0);
+				json_kv_str(out, 5, "subtype", "正常", 0);
+				json_kv_str(out, 5, "root_cause", "未检测到明显热点", 0);
+				json_kv_str(out, 5, "suggestion", "当前系统调用指标在正常范围内", 1);
+				fprintf(out, "          }");
+			}
 		fprintf(out, "\n");
 		json_arr_end(out, 3, 1);
 		json_obj_end(out, 2, 1);
