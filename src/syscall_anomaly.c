@@ -304,8 +304,8 @@ static void print_report(FILE *out,
 			type = "高错误率";
 		fprintf(out, "  —  %s\n", type);
 
-		fprintf(out, "      调用次数: %llu (%.0f/s)  |  平均耗时: %.0fus  |  最大耗时: %.1fms\n",
-		        s->count, rate, avg_us, (double)s->max_ns / 1e6);
+	fprintf(out, "      调用次数: %llu (%.0f/s, 阈值 %d/s)  |  ""平均耗时: %.0fus (阈值 %d us)  |  最大耗时: %.1fms\n",
+	        s->count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US, (double)s->max_ns / 1e6);
 		if (err_pct > 0)
 			fprintf(out, "      错误率: %.1f%% (%llu/%llu)\n", err_pct, s->err_count, s->count);
 
@@ -342,8 +342,8 @@ static void print_report(FILE *out,
 		fprintf(out, "\n  [进程%d] TID %u (%s)  —  %s\n",
 		        pdiag, p->tid, p->comm,
 		        avg_us > LAT_WARN_US ? "高耗时" : "高频调用");
-		fprintf(out, "      系统调用总数: %llu (%.0f/s)  |  平均耗时: %.0fus\n",
-		        p->total_count, rate, avg_us);
+	fprintf(out, "      系统调用总数: %llu (%.0f/s, 阈值 %d/s)  |  ""平均耗时: %.0fus (阈值 %d us)\n",
+	        p->total_count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US);
 		fprintf(out, "      最多调用: %s (%llu次)  |  耗时最多: %s (%.1fms)\n",
 		        syscall_name(p->top_nr), p->top_nr_count,
 		        syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
