@@ -18,6 +18,8 @@
 #include <bpf/bpf.h>
 #include "mem_anomaly.skel.h"
 #include "../include/mem_anomaly.h"
+#include "../include/report_json.h"
+#include "../include/report_md.h"
 #include "../include/utils.h"
 
 #define DEFAULT_INTERVAL   3
@@ -741,6 +743,315 @@ static void detach_all(void)
 }
 
 
+// 统一 JSON 报告
+static void print_mem_json_report(const struct meminfo *m,
+                                   const struct mem_sys_stats *sys,
+                                   const struct win_rates *r,
+                                   const struct flt_audit *au,
+                                   struct proc_row *rows, int nrow,
+                                   unsigned long long tot_reclaim_ns,
+                                   unsigned long long tot_reclaim_cnt,
+                                   double interval_s,
+                                   double avail_pct_lo, double majfault_hi)
+{
+	const char *path = "report/mem.json";
+	FILE *out = json_open(path);
+	if (!out) return;
+
+	char ts[32], buf[256];
+	iso_timestamp(ts, sizeof(ts));
+	struct sys_metrics sm;
+	read_sys_metrics(&sm);
+
+	double avail_pct = pct(m->available, m->total);
+	unsigned long long swap_used = sub_clamp(m->swaptotal, m->swapfree);
+	double swap_used_pct = pct(swap_used, m->swaptotal);
+	double avg_stall_ms = tot_reclaim_cnt
+		? (double)tot_reclaim_ns / (double)tot_reclaim_cnt / 1e6 : 0.0;
+	unsigned long long oom_win =
+		sys->oom_kills > r->oom_delta ? sys->oom_kills : r->oom_delta;
+	double retry_ps = au->retry / interval_s;
+
+	fprintf(out, "{\n");
+	json_kv_str(out, 1, "module", "mem", 0);
+	json_kv_str(out, 1, "timestamp", ts, 0);
+	json_kv_double(out, 1, "duration_s", interval_s, "%.1f", 0);
+
+	json_obj_begin(out, 1, "system");
+	snprintf(buf, sizeof(buf), "%.1f GB", m->total / 1048576.0);
+	json_kv_str(out, 2, "总内存", buf, 0);
+	snprintf(buf, sizeof(buf), "%.1f GB (%.1f%%)", m->available / 1048576.0, avail_pct);
+	json_kv_str(out, 2, "可用内存", buf, 0);
+	snprintf(buf, sizeof(buf), "%.1f / %.1f GB (%.1f%%)",
+		swap_used / 1048576.0, m->swaptotal / 1048576.0, swap_used_pct);
+	json_kv_str(out, 2, "Swap", buf, 0);
+	snprintf(buf, sizeof(buf), "%.2f / %.2f / %.2f", sm.load1, sm.load5, sm.load15);
+	json_kv_str(out, 2, "系统负载 (1m/5m/15m)", buf, 1);
+	json_obj_end(out, 1, 0);
+
+	json_arr_begin(out, 1, "sections");
+
+	// section: memory capacity kv
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "kv", 0);
+		json_kv_str(out, 3, "title", "内存容量快照", 0);
+		json_arr_begin(out, 3, "rows");
+
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"总内存\", \"value\": \"%.1f GB\"},\n",
+			m->total / 1048576.0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"可用内存\", \"value\": \"%.1f GB (%.1f%%)\"},\n",
+			m->available / 1048576.0, avail_pct);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"空闲内存\", \"value\": \"%.1f GB\"},\n",
+			m->free / 1048576.0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"页缓存\", \"value\": \"%.1f GB\"},\n",
+			m->cached / 1048576.0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"匿名页\", \"value\": \"%.1f GB\"},\n",
+			m->anon / 1048576.0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"脏页/回写\", \"value\": \"%.1f / %.1f MB\"},\n",
+			m->dirty / 1024.0, m->writeback / 1024.0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"Swap 使用\", \"value\": \"%.1f / %.1f GB (%.1f%%)\"}\n",
+			swap_used / 1048576.0, m->swaptotal / 1048576.0, swap_used_pct);
+
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: page fault activity kv
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "kv", 0);
+		json_kv_str(out, 3, "title", "缺页与回收活动", 0);
+		json_arr_begin(out, 3, "rows");
+
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"缺页速率\", \"value\": \"%.0f 次/s\"},\n", r->pgfault_ps);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"major fault\", \"value\": \"%.0f 次/s\"},\n", r->pgmajfault_ps);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"换入 pswpin\", \"value\": \"%.0f 页/s\"},\n", r->pswpin_ps);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"换出 pswpout\", \"value\": \"%.0f 页/s\"},\n", r->pswpout_ps);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"refault\", \"value\": \"%.0f 页/s\"},\n", r->refault_ps);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"kswapd 唤醒\", \"value\": \"%llu 次\"},\n", sys->kswapd_wake_count);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"直接回收\", \"value\": \"%llu 次 (阻塞 %.2f ms)\"},\n",
+			sys->direct_reclaim_cnt, avg_stall_ms);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"回收扫描/回收\", \"value\": \"%llu / %llu 页\"},\n",
+			sys->page_scan, sys->page_steal);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"OOM 杀进程\", \"value\": \"%llu 次\"},\n", sys->oom_kills);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"缺页重试差\", \"value\": \"%llu 次 (%.0f 次/s)\"}\n",
+			au->retry, retry_ps);
+
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: top processes table
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "TOP 缺页进程", 0);
+		fprintf(out, "          \"columns\": [\"PID\", \"进程\", \"minflt/s\", \"majflt/s\", \"retry/s\", \"回收次\", \"阻塞ms\"],\n");
+		json_arr_begin(out, 3, "rows");
+
+		int printed = 0;
+		for (int i = 0; i < nrow && printed < 5; i++) {
+			struct mem_proc_stats *s = &rows[i].st;
+			if (s->fault_raw == 0 && s->direct_reclaim_cnt == 0) continue;
+
+			double rps = sub_clamp(s->fault_raw, s->fault_completed) / interval_s;
+			double rms = (double)s->direct_reclaim_ns / 1e6;
+
+			if (printed > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "[\"%u\", \"%s\", \"%.0f\", \"%.0f\", \"%.0f\", \"%llu\", \"%.2f\"]",
+				rows[i].tgid, rows[i].comm,
+				(double)rows[i].minflt_d / interval_s,
+				(double)rows[i].majflt_d / interval_s,
+				rps, s->direct_reclaim_cnt, rms);
+			printed++;
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: diagnosis
+	{
+		int flag_lowmem  = avail_pct < avail_pct_lo && m->total > 0;
+		int flag_major   = r->pgmajfault_ps > majfault_hi;
+		int flag_swap    = (r->pswpin_ps > DEF_SWAPIN_HI || r->pswpout_ps > DEF_SWAPIN_HI)
+		                   && swap_used > 0;
+		int flag_refault = r->refault_ps > DEF_REFAULT_HI;
+		int flag_direct  = sys->direct_reclaim_cnt > 0 && avg_stall_ms > DIRECT_STALL_HI_MS;
+		int flag_oom     = oom_win > 0;
+		int flag_retry   = retry_ps > RETRY_HI_PS;
+		int flag_fault   = r->pgfault_ps > FAULT_HI_PS;
+
+		int triggers = flag_lowmem + flag_major + flag_swap + flag_refault +
+		               flag_direct + flag_oom + flag_retry;
+
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "diagnosis", 0);
+		json_kv_str(out, 3, "title", "诊断结论", 0);
+		fprintf(out, "          \"findings\": [\n");
+
+		if (triggers == 0) {
+			fprintf(out, "            {\"target\": \"系统内存\", \"is_anomaly\": false, "
+				"\"subtype\": \"正常\", "
+				"\"root_cause\": \"未检测到明显内存抖动\", "
+				"\"suggestion\": \"系统内存状态正常\"}\n");
+		} else {
+			const char *anomaly_type, *root_cause;
+			if (flag_oom) {
+				anomaly_type = "内存耗尽 (OOM)";
+				root_cause = "可用内存耗尽触发 OOM Killer, 进程被强制终止 — 内存申请已超出物理容量, 需扩容或定位泄漏进程";
+			} else if (flag_swap && (flag_major || flag_lowmem)) {
+				anomaly_type = "内存抖动 (换页颠簸)";
+				root_cause = "匿名页规模超出物理内存, 频繁换入换出且 major fault 激增 — 业务进程持续申请大块内存导致回收压力上升";
+			} else if (flag_refault && !flag_swap) {
+				anomaly_type = "内存抖动 (缓存颠簸)";
+				root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 (refault 高) — 缓存与业务内存相互竞争";
+			} else if (flag_direct && flag_lowmem) {
+				anomaly_type = "内存抖动 (回收抖动)";
+				root_cause = "可用内存不足触发直接回收, 业务进程在分配路径上同步回收并阻塞 — 回收速度跟不上分配速度";
+			} else if (flag_major) {
+				anomaly_type = "内存抖动 (缺页激增)";
+				root_cause = "major fault 速率显著升高 — 映射文件/共享库被回收后反复触发缺页";
+			} else if (flag_retry && flag_fault) {
+				anomaly_type = "内存抖动 (缺页颠簸)";
+				root_cause = "缺页速率与重试率双高, handle_mm_fault 大量返回 RETRY — 进程频繁触碰刚映射/刚换出的页, MM 锁竞争或 I/O 缺页密集";
+			} else if (flag_retry) {
+				anomaly_type = "内存抖动 (缺页重试)";
+				root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, 虽未触发回收但已产生访问延迟";
+			} else if (flag_lowmem) {
+				anomaly_type = "内存高占用";
+				root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
+			} else {
+				anomaly_type = "内存异常波动";
+				root_cause = "多因素综合, 建议结合 dmesg / OOM 日志进一步排查";
+			}
+
+			// 关联对象
+			char assoc[128];
+			if (flag_oom && sys->last_oom_pid) {
+				char oom_comm[16];
+				read_comm(sys->last_oom_pid, oom_comm, sizeof(oom_comm));
+				snprintf(assoc, sizeof(assoc), "进程 %u (%s) — OOM 受害者",
+					sys->last_oom_pid, oom_comm);
+			} else if (nrow > 0 &&
+			           (rows[0].majflt_d > 0 || rows[0].st.direct_reclaim_cnt > 0)) {
+				snprintf(assoc, sizeof(assoc), "进程 %u (%s)", rows[0].tgid, rows[0].comm);
+			} else {
+				snprintf(assoc, sizeof(assoc), "系统级 (无单一主导进程)");
+			}
+
+			fprintf(out, "            {\n");
+			fprintf(out, "              \"target\": \"%s\",\n", assoc);
+			fprintf(out, "              \"is_anomaly\": true,\n");
+			fprintf(out, "              \"subtype\": \"%s\",\n", anomaly_type);
+			fprintf(out, "              \"root_cause\": \"%s\",\n", root_cause);
+			fprintf(out, "              \"suggestion\": \"结合 dmesg/OOM 日志进一步排查，关注 top 进程内存增长趋势\",\n");
+
+			fprintf(out, "              \"key_metrics\": {\n");
+			fprintf(out, "                \"可用内存\": \"%.1f%% (阈值 %.0f%%, %s)\",\n",
+				avail_pct, avail_pct_lo, flag_lowmem ? "!! 偏低" : "OK");
+			fprintf(out, "                \"缺页速率\": \"%.0f 次/s (阈值 %.0f, %s)\",\n",
+				r->pgfault_ps, FAULT_HI_PS, flag_fault ? "!! 偏高" : "OK");
+			fprintf(out, "                \"major fault\": \"%.0f 次/s (阈值 %.0f, %s)\",\n",
+				r->pgmajfault_ps, majfault_hi, flag_major ? "!! 超标" : "OK");
+			fprintf(out, "                \"直接回收\": \"%llu 次 (阻塞 %.2f ms)%s\",\n",
+				sys->direct_reclaim_cnt, avg_stall_ms, flag_direct ? " !! 阻塞明显" : "");
+			fprintf(out, "                \"refault\": \"%.0f 页/s%s\",\n",
+				r->refault_ps, flag_refault ? " !! 偏高" : "");
+			fprintf(out, "                \"换入/换出\": \"%.0f / %.0f 页/s%s\",\n",
+				r->pswpin_ps, r->pswpout_ps, flag_swap ? " !! 换页活跃" : "");
+			fprintf(out, "                \"缺页重试差\": \"%.0f 次/s%s\",\n",
+				retry_ps, flag_retry ? " !! 偏高" : "");
+			fprintf(out, "                \"OOM\": \"%llu 次%s\"\n",
+				oom_win, flag_oom ? " !! 发生 OOM" : "");
+			fprintf(out, "              },\n");
+
+			fprintf(out, "              \"evidence\": [\n");
+			int ev = 0;
+			if (flag_oom) {
+				if (ev > 0) fprintf(out, ",\n");
+				char oom_comm[16] = "";
+				if (sys->last_oom_pid) read_comm(sys->last_oom_pid, oom_comm, sizeof(oom_comm));
+				fprintf(out, "                \"窗口内发生 %llu 次 OOM kill%s%s\"",
+					oom_win, sys->last_oom_pid ? ", 受害者 " : "",
+					sys->last_oom_pid ? oom_comm : "");
+				ev++;
+			}
+			if (flag_lowmem) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"可用内存降至 %.1f%%, 低于低水位 %.0f%%\"", avail_pct, avail_pct_lo);
+				ev++;
+			}
+			if (flag_major) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"major fault %.0f 次/s, 超出阈值 %.0f\"", r->pgmajfault_ps, majfault_hi);
+				ev++;
+			}
+			if (flag_swap) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"换入 %.0f 页/s、换出 %.0f 页/s, Swap 正在活跃换页\"", r->pswpin_ps, r->pswpout_ps);
+				ev++;
+			}
+			if (flag_refault) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"refault %.0f 页/s, 刚回收的页被立即读回, 缓存严重不足\"", r->refault_ps);
+				ev++;
+			}
+			if (flag_direct) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms\"", sys->direct_reclaim_cnt, avg_stall_ms);
+				ev++;
+			}
+			if (flag_fault) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"缺页速率 %.0f 次/s, 超出阈值 %.0f, 内存访问密集\"", r->pgfault_ps, FAULT_HI_PS);
+				ev++;
+			}
+			if (flag_retry) {
+				if (ev > 0) fprintf(out, ",\n");
+				double ratio = au->raw ? (double)au->retry / (double)au->raw * 100.0 : 0.0;
+				fprintf(out, "                \"缺页重试差 %.0f 次/s (占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\"", retry_ps, ratio);
+				ev++;
+			}
+			if (nrow > 0 && rows[0].matched && rows[0].majflt_d > 0) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "                \"主导进程 %s(%u) major fault 最高: %.0f 次/s\"",
+					rows[0].comm, rows[0].tgid,
+					(double)rows[0].majflt_d / interval_s);
+				ev++;
+			}
+			fprintf(out, "\n              ]\n");
+			fprintf(out, "            }\n");
+		}
+
+		fprintf(out, "          ]\n");
+		json_obj_end(out, 2, 1);
+	}
+
+	json_arr_end(out, 1, 1);
+	fprintf(out, "}\n");
+	json_close(out);
+}
+
 static void usage(const char *prog)
 {
   fprintf(stderr,
@@ -884,7 +1195,13 @@ int run_mem(int argc, char **argv)
                     tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
                     avail_pct_lo, majfault_hi);
 
-    if (duration > 0 && time(NULL) - start >= duration) break;
+	if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
+		print_mem_json_report(&m, &sys_delta, &rates, &au, rows, nrow,
+				  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
+				  avail_pct_lo, majfault_hi);
+		json_to_markdown("report/mem.json", "report/mem.md");
+		break;
+	}
   }
 
   fprintf(stderr, "[*] 正在退出...\n");
