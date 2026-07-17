@@ -1020,12 +1020,12 @@ static void print_mem_json_report(const struct meminfo *m,
 			}
 			if (flag_refault) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"refault %.0f 页/s, 刚回收的页被立即读回, 缓存严重不足\"", r->refault_ps);
+				fprintf(out, "                \"refault %.0f 页/s (阈值 %.0f), 刚回收的页被立即读回, 缓存严重不足\"", r->refault_ps, DEF_REFAULT_HI);
 				ev++;
 			}
 			if (flag_direct) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms\"", sys->direct_reclaim_cnt, avg_stall_ms);
+				fprintf(out, "                \"触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms (阈值 %.1f ms)\"", sys->direct_reclaim_cnt, avg_stall_ms, DIRECT_STALL_HI_MS);
 				ev++;
 			}
 			if (flag_fault) {
