@@ -1194,7 +1194,7 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			}
 			if (flag_hot) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "              \"Top-3 热点文件占全局 IOPS 的 %.1f%%\"", diag_top3_pct);
+				fprintf(out, "              \"Top-3 热点文件占全局 IOPS 的 %.1f%% (阈值 70%%)，访问高度集中\"", diag_top3_pct);
 				ev++;
 			}
 			fprintf(out, "\n            ]\n");
