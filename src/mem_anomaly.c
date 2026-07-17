@@ -613,7 +613,7 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     anomaly_type = "内存抖动 (换页颠簸)";
     root_cause = "匿名页规模超出物理内存, 频繁换入换出且 major fault 激增 — "
                  "业务进程持续申请大块内存导致回收压力上升";
-  } else if (flag_refault && !flag_swap) {
+  } else if (flag_refault && (flag_lowmem || flag_fault || flag_direct)) {
     anomaly_type = "内存抖动 (缓存颠簸)";
     root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 (refault 高) — "
                  "缓存与业务内存相互竞争";
@@ -621,7 +621,7 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     anomaly_type = "内存抖动 (回收抖动)";
     root_cause = "可用内存不足触发直接回收, 业务进程在分配路径上同步回收并阻塞 — "
                  "回收速度跟不上分配速度";
-  } else if (flag_major) {
+  } else if (flag_major && (flag_lowmem || flag_refault || flag_fault)) {
     anomaly_type = "内存抖动 (缺页激增)";
     root_cause = "major fault 速率显著升高 — 映射文件/共享库被回收后反复触发缺页";
   } else if (flag_retry && flag_fault) {
@@ -632,6 +632,14 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
     root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, "
                  "暂未形成抖动，持续监控";
+  } else if (flag_refault) {
+    anomaly_type = "注意: refault 偏高 (未构成异常)";
+    root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — "
+                 "暂未伴随内存压力或高缺页, 持续监控";
+  } else if (flag_major) {
+    anomaly_type = "注意: major fault 偏高 (未构成异常)";
+    root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, "
+                 "可能为正常共享库加载, 持续监控";
   } else if (flag_lowmem) {
     anomaly_type = "内存高占用";
     root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
@@ -926,13 +934,13 @@ static void print_mem_json_report(const struct meminfo *m,
 			} else if (flag_swap && (flag_major || flag_lowmem)) {
 				anomaly_type = "内存抖动 (换页颠簸)";
 				root_cause = "匿名页规模超出物理内存, 频繁换入换出且 major fault 激增 — 业务进程持续申请大块内存导致回收压力上升";
-			} else if (flag_refault && !flag_swap) {
+			} else if (flag_refault && (flag_lowmem || flag_fault || flag_direct)) {
 				anomaly_type = "内存抖动 (缓存颠簸)";
 				root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 (refault 高) — 缓存与业务内存相互竞争";
 			} else if (flag_direct && flag_lowmem) {
 				anomaly_type = "内存抖动 (回收抖动)";
 				root_cause = "可用内存不足触发直接回收, 业务进程在分配路径上同步回收并阻塞 — 回收速度跟不上分配速度";
-			} else if (flag_major) {
+			} else if (flag_major && (flag_lowmem || flag_refault || flag_fault)) {
 				anomaly_type = "内存抖动 (缺页激增)";
 				root_cause = "major fault 速率显著升高 — 映射文件/共享库被回收后反复触发缺页";
 			} else if (flag_retry && flag_fault) {
@@ -941,6 +949,14 @@ static void print_mem_json_report(const struct meminfo *m,
 			} else if (flag_retry) {
 				anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
 				root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, 暂未形成抖动，持续监控";
+				is_real_anom = 0;
+			} else if (flag_refault) {
+				anomaly_type = "注意: refault 偏高 (未构成异常)";
+				root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — 暂未伴随内存压力或高缺页, 持续监控";
+				is_real_anom = 0;
+			} else if (flag_major) {
+				anomaly_type = "注意: major fault 偏高 (未构成异常)";
+				root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, 可能为正常共享库加载, 持续监控";
 				is_real_anom = 0;
 			} else if (flag_lowmem) {
 				anomaly_type = "内存高占用";
