@@ -1036,7 +1036,7 @@ static void print_mem_json_report(const struct meminfo *m,
 			if (flag_retry) {
 				if (ev > 0) fprintf(out, ",\n");
 				double ratio = au->raw ? (double)au->retry / (double)au->raw * 100.0 : 0.0;
-				fprintf(out, "                \"缺页重试差 %.0f 次/s (占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\"", retry_ps, ratio);
+				fprintf(out, "                \"缺页重试差 %.0f 次/s (阈值 %.0f, 占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\"", retry_ps, RETRY_HI_PS, ratio);
 				ev++;
 			}
 			if (nrow > 0 && rows[0].matched && rows[0].majflt_d > 0) {
