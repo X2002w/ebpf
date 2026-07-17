@@ -16,4 +16,5 @@ ai_test/api.txt
 
 !README.md
 !ai_test/report.md
-!src/cpu_anomaly/report/*.md
+!report/*.md
+!docs/*
