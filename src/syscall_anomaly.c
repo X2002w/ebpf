@@ -564,8 +564,21 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 5, 0);
 
 			fprintf(out, "            \"evidence\": [\n");
-			fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us\"\n",
-				syscall_name(entries[i].nr), s->count, rate, avg_us);
+			if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US)
+				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s, 阈值 %d/s), 平均耗时 %.0f us (阈值 %d us), 双高异常\"\n",
+					syscall_name(entries[i].nr), s->count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US);
+			else if (rate > FREQ_WARN_PER_SEC)
+				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s, 阈值 %d/s), 平均耗时 %.0f us\"\n",
+					syscall_name(entries[i].nr), s->count, rate, FREQ_WARN_PER_SEC, avg_us);
+			else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr))
+				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us (阈值 %d us), 事件等待型\"\n",
+					syscall_name(entries[i].nr), s->count, rate, avg_us, LAT_WARN_US);
+			else if (avg_us > LAT_WARN_US)
+				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us (阈值 %d us)\"\n",
+					syscall_name(entries[i].nr), s->count, rate, avg_us, LAT_WARN_US);
+			else
+				fprintf(out, "              \"%s 错误率 %.1f%% (阈值 %.0f%%), %llu/%llu 次失败\"\n",
+					syscall_name(entries[i].nr), err_pct, ERR_RATE_WARN * 100, s->err_count, s->count);
 			fprintf(out, "            ]\n");
 
 			diag++;
