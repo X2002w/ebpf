@@ -22,6 +22,8 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include "../include/utils.h"
+#include "../include/report_json.h"
+#include "../include/report_md.h"
 #include "cpu_anomaly.skel.h"
 #include "lock_anomaly.skel.h"
 #include "../include/lock_anomaly.h"
@@ -248,28 +250,6 @@ static void print_call_stack(FILE *out, int stackmap_fd, int stack_id,
 		resolve_ip(resolve_pid, ips[i], sym, sizeof(sym));
 		fprintf(out, "%s  #%-2d  %s\n", prefix, i, sym);
 	}
-}
-
-// JSON 辅助
-static void json_str(FILE *out, const char *s)
-{
-	fputc('"', out);
-	for (; *s; s++) {
-		switch (*s) {
-		case '"':  fputs("\\\"", out); break;
-		case '\\': fputs("\\\\", out); break;
-		case '\n': fputs("\\n", out); break;
-		case '\r': fputs("\\r", out); break;
-		case '\t': fputs("\\t", out); break;
-		default:   fputc(*s, out);
-		}
-	}
-	fputc('"', out);
-}
-
-static void jindent(FILE *out, int n)
-{
-	for (int i = 0; i < n; i++) fputs("  ", out);
 }
 
 // 文本诊断报告
@@ -548,17 +528,16 @@ static void print_lock_report(FILE *out,
 	fflush(out);
 }
 
-// JSON 报告
+// JSON 报告 (统一 schema)
 static void print_json_report(struct lock_proc_info *procs, int count,
                               struct hot_lock_entry *hot_locks, int hot_count,
-                              unsigned long long interval_ns)
+                              struct stack_entry *stacks, int stack_count,
+                              unsigned long long total_stacks,
+                              int stackmap_fd, unsigned long long interval_ns)
 {
-	const char *path = "report.json";
-	FILE *out = fopen(path, "w");
-	if (!out) {
-		fprintf(stderr, "[!] 无法写入 %s: %s\n", path, strerror(errno));
-		return;
-	}
+	const char *path = "report/lock.json";
+	FILE *out = json_open(path);
+	if (!out) return;
 
 	char ts[32];
 	iso_timestamp(ts, sizeof(ts));
@@ -566,130 +545,213 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 	struct sys_metrics sys;
 	read_sys_metrics(&sys);
 
-	// 汇总统计
 	unsigned long long total_futex_waits = 0, total_futex_ns = 0;
 	for (int i = 0; i < count; i++) {
 		total_futex_waits += procs[i].lock.futex_wait_count;
 		total_futex_ns += procs[i].lock.futex_wait_ns;
 	}
+	double global_avg_us = total_futex_waits > 0
+		? (double)total_futex_ns / (double)total_futex_waits / 1000.0 : 0;
 
 	fprintf(out, "{\n");
-	jindent(out, 1); fprintf(out, "\"anomaly_type\": \"锁竞争\",\n");
-	jindent(out, 1); fprintf(out, "\"anomaly_time_window\": "); json_str(out, ts); fprintf(out, ",\n");
-	jindent(out, 1); fprintf(out, "\"duration_s\": %.1f,\n", duration_s);
-	jindent(out, 1); fprintf(out, "\"system_load\": { \"load1\": %.2f, \"load5\": %.2f, \"load15\": %.2f },\n",
-	       sys.load1, sys.load5, sys.load15);
-	jindent(out, 1); fprintf(out, "\"total_procs\": %d,\n", count);
-	jindent(out, 1); fprintf(out, "\"total_futex_waits\": %llu,\n", total_futex_waits);
-	jindent(out, 1); fprintf(out, "\"total_futex_ns\": %llu,\n", total_futex_ns);
-	jindent(out, 1); fprintf(out, "\"hot_locks\": [\n");
+	json_kv_str(out, 1, "module", "lock", 0);
+	json_kv_str(out, 1, "timestamp", ts, 0);
+	json_kv_double(out, 1, "duration_s", duration_s, "%.1f", 0);
 
-	int hl_limit = hot_count < 10 ? hot_count : 10;
-	for (int i = 0; i < hl_limit; i++) {
-		struct futex_hot_stats *hs = &hot_locks[i].stats;
-		jindent(out, 2); fprintf(out, "{\n");
-		jindent(out, 3); fprintf(out, "\"tgid\": %u,\n", hot_locks[i].key.tgid);
-		jindent(out, 3); fprintf(out, "\"uaddr\": \"0x%llx\",\n",
-		       (unsigned long long)hot_locks[i].key.uaddr);
-		jindent(out, 3); fprintf(out, "\"wait_count\": %llu,\n", hs->wait_count);
-		jindent(out, 3); fprintf(out, "\"wait_ns\": %llu,\n", hs->wait_ns);
-		jindent(out, 3); fprintf(out, "\"avg_wait_us\": %.1f,\n",
-		       hs->wait_count > 0 ? (double)hs->wait_ns / (double)hs->wait_count / 1000.0 : 0);
-		jindent(out, 3); fprintf(out, "\"max_wait_us\": %.1f\n",
-		       (double)hs->max_wait_ns / 1000.0);
-		jindent(out, 2); fprintf(out, "}%s\n", i < hl_limit - 1 ? "," : "");
+	// system
+	char buf[256];
+	json_obj_begin(out, 1, "system");
+	snprintf(buf, sizeof(buf), "%llu 次", total_futex_waits);
+	json_kv_str(out, 2, "全局 futex 等待次数", buf, 0);
+	snprintf(buf, sizeof(buf), "%.0fus", global_avg_us);
+	json_kv_str(out, 2, "全局平均 futex 等待", buf, 0);
+	snprintf(buf, sizeof(buf), "%.1fms", (double)total_futex_ns / 1e6);
+	json_kv_str(out, 2, "全局 futex 总等待时间", buf, 0);
+	snprintf(buf, sizeof(buf), "%.2f / %.2f / %.2f",
+		 sys.load1, sys.load5, sys.load15);
+	json_kv_str(out, 2, "系统负载 (1m/5m/15m)", buf, 0);
+	snprintf(buf, sizeof(buf), "%d", count);
+	json_kv_str(out, 2, "活跃锁竞争进程数", buf, 1);
+	json_obj_end(out, 1, 0);
+
+	json_arr_begin(out, 1, "sections");
+
+	// section: hot locks table
+	if (hot_count > 0) {
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "热点锁 Top-10", 0);
+		fprintf(out, "          \"columns\": [\"排名\", \"TGID\", \"uaddr\", \"等待次数\", \"总等待\", \"avg\", \"max\"],\n");
+		json_arr_begin(out, 3, "rows");
+		int hl = hot_count < 10 ? hot_count : 10;
+		for (int i = 0; i < hl; i++) {
+			struct futex_hot_stats *hs = &hot_locks[i].stats;
+			double avg_us = hs->wait_count > 0
+				? (double)hs->wait_ns / (double)hs->wait_count / 1000.0 : 0;
+			json_indent(out, 4);
+			fprintf(out, "[\"%d\", \"%u\", \"0x%llx\", \"%llu\", \"%.1fms\", \"%.0fus\", \"%.0fus\"]%s\n",
+				i + 1, hot_locks[i].key.tgid,
+				(unsigned long long)hot_locks[i].key.uaddr,
+				hs->wait_count, (double)hs->wait_ns / 1e6,
+				avg_us, (double)hs->max_wait_ns / 1000.0,
+				i < hl - 1 ? "," : "");
+		}
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
 	}
 
-	jindent(out, 1); fprintf(out, "],\n");
-	jindent(out, 1); fprintf(out, "\"processes\": [\n");
+	// section: diagnosis
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "diagnosis", 0);
+		json_kv_str(out, 3, "title", "锁竞争诊断分析", 0);
+		json_arr_begin(out, 3, "findings");
 
-	for (int i = 0; i < count && i < 20; i++) {
-		struct lock_pid_stats *ls = &procs[i].lock;
-		struct cpu_pid_stats *cs = &procs[i].cpu;
-		double futex_avg_us = ls->futex_wait_count > 0
-			? (double)ls->futex_wait_ns / (double)ls->futex_wait_count / 1000.0 : 0;
-		double cswitch_pm = cs->cswitch_total > 0
-			? (double)cs->cswitch_total / ((double)interval_ns / 60e9) : 0;
-		double vol_ratio = cs->cswitch_total > 0
-			? (double)cs->cswitch_voluntary / (double)cs->cswitch_total : 0;
+		int diag = 0;
+		for (int i = 0; i < count && i < 20; i++) {
+			struct lock_pid_stats *ls = &procs[i].lock;
+			struct cpu_pid_stats *cs = &procs[i].cpu;
+			double futex_avg_us = ls->futex_wait_count > 0
+				? (double)ls->futex_wait_ns / (double)ls->futex_wait_count / 1000.0 : 0;
+			double futex_max_us = (double)ls->futex_max_wait_ns / 1000.0;
+			double cpu_pct = (double)cs->on_cpu_ns / (double)interval_ns * 100.0;
+			double cswitch_pm = cs->cswitch_total > 0
+				? (double)cs->cswitch_total / ((double)interval_ns / 60e9) : 0;
+			double vol_ratio = cs->cswitch_total > 0
+				? (double)cs->cswitch_voluntary / (double)cs->cswitch_total : 0;
+			double blocked_ms = (double)cs->blocked_ns / 1e6;
 
-		// 与文本报告一致的诊断逻辑
-		unsigned int tgid = get_tgid(procs[i].pid);
-		int proc_hot_keys = 0;
-		unsigned long long proc_hot_max_ns = 0;
-		for (int h = 0; h < hot_count; h++) {
-			if (hot_locks[h].key.tgid == tgid) {
-				proc_hot_keys++;
-				if (hot_locks[h].stats.wait_ns > proc_hot_max_ns) proc_hot_max_ns = hot_locks[h].stats.wait_ns;
+			unsigned int tgid = get_tgid(procs[i].pid);
+			int proc_hot_keys = 0;
+			unsigned long long proc_hot_max_ns = 0;
+			for (int h = 0; h < hot_count; h++) {
+				if (hot_locks[h].key.tgid == tgid) {
+					proc_hot_keys++;
+					if (hot_locks[h].stats.wait_ns > proc_hot_max_ns)
+						proc_hot_max_ns = hot_locks[h].stats.wait_ns;
+				}
 			}
+
+			int is_parked = (ls->futex_wait_count <= 3 &&
+			                 futex_avg_us > FUTEX_CRIT_US &&
+			                 cswitch_pm < 5000);
+			int is_anomaly = 0;
+			const char *subtype = NULL;
+			const char *root_cause = NULL;
+			const char *suggestion = NULL;
+
+			if (is_parked) {
+				subtype = "futex 长期等待 (事件睡眠)";
+			} else if (ls->futex_wait_count > 5 && futex_avg_us > FUTEX_CRIT_US) {
+				is_anomaly = 1;
+				subtype = "锁竞争 (临界区过大)";
+				root_cause = "多次 futex 等待时间过长，临界区代码执行耗时严重";
+				suggestion = "使用 perf lock 分析锁持有时间；审查临界区代码复杂度，考虑拆分或异步化";
+			} else if (proc_hot_keys >= 2 &&
+			           proc_hot_max_ns > (unsigned long long)((double)ls->futex_wait_ns * HOT_KEY_RATIO)) {
+				is_anomaly = 1;
+				subtype = "锁竞争 (热点锁集中)";
+				root_cause = "多线程争用同一临界区，热点锁集中度过高";
+				suggestion = "审查热点锁的临界区粒度；考虑锁拆分、读写锁 (rwlock) 或无锁数据结构";
+			} else if (vol_ratio > VOLUNTARY_RATIO_HIGH &&
+			           cswitch_pm > 10000 && ls->futex_wait_count > 3) {
+				is_anomaly = 1;
+				subtype = "锁竞争 (锁粒度过粗)";
+				root_cause = "主动切换占比高 + futex 等待显著，线程频繁因锁等待让出 CPU";
+				suggestion = "检查线程池与锁的配比；考虑减小锁粒度或分段锁";
+			} else if (ls->futex_wait_count > 3 && futex_avg_us > FUTEX_WARN_US) {
+				is_anomaly = 1;
+				subtype = "锁竞争";
+				root_cause = "futex 等待时间偏高，存在锁竞争导致性能退化";
+				suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式及线程同步策略";
+			}
+
+			if (diag > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+			snprintf(buf, sizeof(buf), "%s(%u)", procs[i].comm, procs[i].pid);
+			json_kv_str(out, 5, "target", buf, 0);
+			json_kv_bool(out, 5, "is_anomaly", is_anomaly, 0);
+			json_kv_str(out, 5, "subtype", subtype ? subtype : (is_parked ? "futex 长期等待" : "正常"), 0);
+			json_kv_str(out, 5, "root_cause", root_cause ? root_cause : "", 0);
+			json_kv_str(out, 5, "suggestion", suggestion ? suggestion : "", 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			snprintf(buf, sizeof(buf), "%llu 次", ls->futex_wait_count);
+			json_kv_str(out, 6, "futex 等待次数", buf, 0);
+			snprintf(buf, sizeof(buf), "%.0fus", futex_avg_us);
+			json_kv_str(out, 6, "futex 平均等待", buf, 0);
+			snprintf(buf, sizeof(buf), "%.0fus", futex_max_us);
+			json_kv_str(out, 6, "futex 最大等待", buf, 0);
+			snprintf(buf, sizeof(buf), "%.1fms", (double)ls->futex_wait_ns / 1e6);
+			json_kv_str(out, 6, "futex 总等待时间", buf, 0);
+			snprintf(buf, sizeof(buf), "%.1fms", blocked_ms);
+			json_kv_str(out, 6, "阻塞时间", buf, 0);
+			snprintf(buf, sizeof(buf), "%.1f%%", cpu_pct);
+			json_kv_str(out, 6, "CPU 占用", buf, 0);
+			snprintf(buf, sizeof(buf), "%.0f/min (主动: %llu)", cswitch_pm, cs->cswitch_voluntary);
+			json_kv_str(out, 6, "上下文切换", buf, 1);
+			json_obj_end(out, 5, 1);
+
+			diag++;
+			json_obj_end(out, 4, 1);
 		}
 
-		int is_parked = (ls->futex_wait_count <= 3 &&
-		                 futex_avg_us > FUTEX_CRIT_US &&
-		                 cswitch_pm < 5000);
-
-		int is_anomaly = 0;
-		const char *subtype = "正常";
-		const char *root_cause = NULL;
-		const char *suggestion = NULL;
-
-		if (is_parked) {
-			subtype = "futex 长期等待 (事件睡眠)";
-		} else if (ls->futex_wait_count > 5 && futex_avg_us > FUTEX_CRIT_US) {
-			is_anomaly = 1;
-			subtype = "锁竞争 (临界区过大)";
-			root_cause = "多次 futex 等待时间过长，临界区代码执行耗时严重";
-			suggestion = "使用 perf lock 分析锁持有时间；审查临界区代码复杂度，考虑拆分或异步化";
-		} else if (!is_parked && proc_hot_keys >= 2 &&
-		           proc_hot_max_ns > (unsigned long long)((double)ls->futex_wait_ns * HOT_KEY_RATIO)) {
-			is_anomaly = 1;
-			subtype = "锁竞争 (热点锁集中)";
-			root_cause = "多线程争用同一临界区，热点锁集中度过高";
-			suggestion = "审查热点锁的临界区粒度；考虑锁拆分、读写锁 (rwlock) 或无锁数据结构";
-		} else if (!is_parked && vol_ratio > VOLUNTARY_RATIO_HIGH &&
-		           cswitch_pm > 10000 && ls->futex_wait_count > 3) {
-			is_anomaly = 1;
-			subtype = "锁竞争 (锁粒度过粗)";
-			root_cause = "主动切换占比高 + futex 等待显著，线程频繁因锁等待让出 CPU";
-			suggestion = "检查线程池与锁的配比；考虑减小锁粒度或分段锁";
-		} else if (!is_parked && ls->futex_wait_count > 3 && futex_avg_us > FUTEX_WARN_US) {
-			is_anomaly = 1;
-			subtype = "锁竞争";
-			root_cause = "futex 等待时间偏高，存在锁竞争导致性能退化";
-			suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式及线程同步策略";
-		}
-
-		int is_last = (i == count - 1 || i == 19);
-
-		jindent(out, 2); fprintf(out, "{\n");
-		jindent(out, 3); fprintf(out, "\"pid\": %u,\n", procs[i].pid);
-		jindent(out, 3); fprintf(out, "\"tgid\": %u,\n", tgid);
-		jindent(out, 3); fprintf(out, "\"comm\": "); json_str(out, procs[i].comm); fprintf(out, ",\n");
-		jindent(out, 3); fprintf(out, "\"futex_wait_count\": %llu,\n", ls->futex_wait_count);
-		jindent(out, 3); fprintf(out, "\"futex_wait_ns\": %llu,\n", ls->futex_wait_ns);
-		jindent(out, 3); fprintf(out, "\"futex_avg_wait_us\": %.1f,\n", futex_avg_us);
-		jindent(out, 3); fprintf(out, "\"futex_max_wait_us\": %.1f,\n",
-		       (double)ls->futex_max_wait_ns / 1000.0);
-		jindent(out, 3); fprintf(out, "\"blocked_ns\": %llu,\n", cs->blocked_ns);
-		jindent(out, 3); fprintf(out, "\"cpu_pct\": %.1f,\n",
-		       (double)cs->on_cpu_ns / (double)interval_ns * 100.0);
-		jindent(out, 3); fprintf(out, "\"cswitch_voluntary\": %llu,\n", cs->cswitch_voluntary);
-		jindent(out, 3); fprintf(out, "\"cswitch_total\": %llu,\n", cs->cswitch_total);
-		jindent(out, 3); fprintf(out, "\"is_anomaly\": %s,\n", is_anomaly ? "true" : "false");
-		jindent(out, 3); fprintf(out, "\"is_parked\": %s,\n", is_parked ? "true" : "false");
-		jindent(out, 3); fprintf(out, "\"subtype\": "); json_str(out, subtype); fprintf(out, ",\n");
-		jindent(out, 3); fprintf(out, "\"root_cause\": ");
-		if (root_cause) json_str(out, root_cause); else fputs("null", out);
-		fprintf(out, ",\n");
-		jindent(out, 3); fprintf(out, "\"suggestion\": ");
-		if (suggestion) json_str(out, suggestion); else fputs("null", out);
-		fprintf(out, "\n");
-		jindent(out, 2); fprintf(out, "}%s\n", is_last ? "" : ",");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
 	}
 
-	jindent(out, 1); fprintf(out, "]\n");
+	// section: stacks (wait point call stacks)
+	if (total_stacks > 0 && stack_count > 0) {
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "stacks", 0);
+		json_kv_str(out, 3, "title", "锁等待点调用栈", 0);
+		fprintf(out, "          \"total_samples\": %llu,\n", total_stacks);
+
+		int resolve_pid = count > 0 ? (int)procs[0].pid : 0;
+		int top_n = stack_count < 5 ? stack_count : 5;
+
+		fprintf(out, "          \"top_stacks\": [\n");
+		for (int i = 0; i < top_n; i++) {
+			double pct = (double)stacks[i].count / (double)total_stacks * 100.0;
+
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+			json_kv_int(out, 5, "rank", i + 1, 0);
+			json_kv_int(out, 5, "count", (int)stacks[i].count, 0);
+			json_kv_double(out, 5, "pct", pct, "%.1f", 0);
+
+			__u64 ips[127];
+			memset(ips, 0, sizeof(ips));
+			int depth = 0;
+			if (stackmap_fd >= 0 &&
+			    bpf_map_lookup_elem(stackmap_fd, &stacks[i].stack_id, ips) == 0) {
+				for (int j = 0; j < 127 && ips[j] != 0; j++) depth++;
+			}
+
+			fprintf(out, "            \"frames\": [\n");
+			for (int j = 0; j < depth; j++) {
+				char sym[256];
+				resolve_ip(resolve_pid, ips[j], sym, sizeof(sym));
+				json_indent(out, 6);
+				fprintf(out, "\"%s\"%s\n", sym, j < depth - 1 ? "," : "");
+			}
+			if (depth == 0) {
+				json_indent(out, 6);
+				fprintf(out, "\"(empty)\"");
+			}
+			fprintf(out, "\n            ]\n");
+
+			json_obj_end(out, 4, i == top_n - 1);
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 1);
+	}
+
+	json_arr_end(out, 1, 1);
 	fprintf(out, "}\n");
-	fclose(out);
+	json_close(out);
 	fprintf(stderr, "[*] JSON 报告已写入 %s\n", path);
 }
 
@@ -707,8 +769,9 @@ static void usage(const char *prog)
 		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
 		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
 		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
-		"  -j, --json               额外写入 report.json\n"
 		"  -h, --help               显示本帮助信息\n"
+		"\n"
+		"报告默认输出到 report/lock.json 和 report/lock.md。\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                            # 默认参数运行\n"
@@ -726,26 +789,22 @@ int run_lock(int argc, char **argv)
 	int duration         = 0;
 	int profile_hz       = 0; // 锁模块默认不启用 perf 采样，用 futex 点栈
 	const char *output_file = NULL;
-	int json_mode = 0;
-
 	static struct option long_opts[] = {
 		{"interval", required_argument, 0, 'i'},
 		{"duration", required_argument, 0, 'd'},
 		{"output",   required_argument, 0, 'o'},
 		{"profile",  required_argument, 0, 'p'},
-		{"json",     no_argument,       0, 'j'},
 		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "i:d:o:p:jh", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:p:h", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
 		case 'p': profile_hz = atoi(optarg); break;
-		case 'j': json_mode = 1; break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
@@ -868,22 +927,25 @@ int run_lock(int argc, char **argv)
 		                  stacks, stack_count, total_stacks,
 		                  lock_stackmap_fd, ncpu, interval_ns);
 
-		if (json_mode) {
-			print_json_report(procs, count, hot_locks, hot_count, interval_ns);
+		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
+			print_json_report(procs, count, hot_locks, hot_count,
+					  stacks, stack_count, total_stacks,
+					  lock_stackmap_fd, interval_ns);
+			json_to_markdown("report/lock.json", "report/lock.md");
 		}
 
 		free(procs);
 		free(hot_locks);
 		free(stacks);
 
+		if (exiting || (duration > 0 && time(NULL) - start >= duration))
+			break;
+
 		// 重置 map
 		reset_map(lock_stats_fd);
 		reset_map(futex_key_fd);
 		reset_map(lock_stack_fd);
 		reset_map(cpu_stats_fd);
-
-		if (duration > 0 && time(NULL) - start >= duration)
-			break;
 	}
 
 	if (pe_fds) {
