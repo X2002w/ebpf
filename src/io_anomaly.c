@@ -661,17 +661,17 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       anomaly_type = "I/O 延迟抖动";
       root_cause = "多作业并发争抢 — 请求在调度层排队等待时间显著增加";
     } else if (flag_qd) {
-      anomaly_type = "I/O 吞吐波动";
-      root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压";
+      anomaly_type = "注意: 队列瞬时拥堵 (未构成异常)";
+      root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压, 暂未引起时延升高";
     } else if (flag_cache) {
-      anomaly_type = "I/O 缓存异常";
-      root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐";
+      anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
+      root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
     } else if (flag_lat) {
       anomaly_type = "I/O 延迟抖动";
-      root_cause = "随机读写压力 — 大量小 IO 请求导致设备寻道/寻址开销增大";
+      root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
     } else if (flag_hot) {
-      anomaly_type = "I/O 负载集中";
-      root_cause = "单一文件占主导 — 当前负载主要集中在个别文件，设备性能正常";
+      anomaly_type = "注意: 热点文件集中 (未构成异常)";
+      root_cause = "单一文件占主导 — 当前负载主要集中在个别文件, 暂未引起 I/O 延迟升高";
     } else {
       anomaly_type = "I/O 异常波动";
       root_cause = "多因素综合 — 建议结合系统日志进一步排查";
@@ -1112,6 +1112,7 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 
 			const char *root_cause = NULL;
 			const char *anomaly_type = NULL;
+			int is_real_anom = 1;
 			if (flag_qd && flag_lat) {
 				anomaly_type = "I/O 延迟抖动";
 				root_cause = "磁盘队列过深 — 并发请求超出设备处理能力";
@@ -1125,17 +1126,20 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 				anomaly_type = "I/O 延迟抖动";
 				root_cause = "多作业并发争抢 — 请求在调度层排队等待时间显著增加";
 			} else if (flag_qd) {
-				anomaly_type = "I/O 吞吐波动";
-				root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压";
+				anomaly_type = "注意: 队列瞬时拥堵 (未构成异常)";
+				root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压, 暂未引起时延升高";
+				is_real_anom = 0;
 			} else if (flag_cache) {
-				anomaly_type = "I/O 缓存异常";
-				root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐";
+				anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
+				root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
+				is_real_anom = 0;
 			} else if (flag_lat) {
 				anomaly_type = "I/O 延迟抖动";
-				root_cause = "随机读写压力 — 大量小 IO 请求导致设备寻道/寻址开销增大";
+				root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
 			} else if (flag_hot) {
-				anomaly_type = "I/O 负载集中";
-				root_cause = "单一文件占主导 — 当前负载主要集中在个别文件";
+				anomaly_type = "注意: 热点文件集中 (未构成异常)";
+				root_cause = "单一文件占主导 — 当前负载主要集中在个别文件, 暂未引起 I/O 延迟升高";
+				is_real_anom = 0;
 			} else {
 				anomaly_type = "I/O 异常波动";
 				root_cause = "多因素综合 — 建议结合系统日志进一步排查";
@@ -1148,7 +1152,7 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			char tbuf[128];
 			snprintf(tbuf, sizeof(tbuf), "块设备 %u:%u (%s)", maj, min, type_label);
 			json_kv_str(out, 5, "target", tbuf, 0);
-			json_kv_bool(out, 5, "is_anomaly", 1, 0);
+			json_kv_bool(out, 5, "is_anomaly", is_real_anom, 0);
 			json_kv_str(out, 5, "subtype", anomaly_type, 0);
 			json_kv_str(out, 5, "root_cause", root_cause, 0);
 			json_kv_str(out, 5, "suggestion",
