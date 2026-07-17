@@ -1189,7 +1189,7 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			}
 			if (flag_cache) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "              \"缓存失效率 %.1f%%，同块数据被重复读取 %llu 次\"", miss_rate, val.cache_miss_count);
+				fprintf(out, "              \"缓存失效率 %.1f%% (阈值 10.0%%)，同块数据被重复读取 %llu 次\"", miss_rate, val.cache_miss_count);
 				ev++;
 			}
 			if (flag_hot) {
