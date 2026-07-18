@@ -10,11 +10,12 @@ demo/
 tags
 .*/
 !.github/
-ai_test/venv/
-ai_test/api.txt
+ai_analysis/venv/
+ai_analysis/api.txt
+ai_analysis/__pycache__/
 
 
 !README.md
-!ai_test/report.md
+!ai_analysis/report.md
 !report/*.md
 !docs/*
