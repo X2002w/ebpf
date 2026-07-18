@@ -23,24 +23,54 @@ from sys_message import collect_all, to_text as sys_to_text
 from openai import OpenAI
 
 
-# API 配置
+# API 配置（优先环境变量 > api.txt > api_config.json > 默认值）
 
-def _load_api_key() -> str:
-	key = os.environ.get("DEEPSEEK_API_KEY")
-	if key:
-		return key
+def _load_api_config() -> dict:
+	"""加载 API 配置，优先级: 环境变量 > api.txt > api_config.json > 默认值"""
+	defaults = {
+		"api_key": "sk-xxxxxxxx",
+		"base_url": "https://api.deepseek.com",
+		"model": "deepseek-v4-pro",
+	}
+	config = defaults.copy()
+
+	# 1. JSON 配置文件（公共模板）
 	try:
-		file = Path(__file__).parent / "api.txt"
-		key = file.read_text(encoding="utf-8").strip()
-		if key:
-			return key
+		file = Path(__file__).parent / "api_config.json"
+		if file.is_file():
+			with open(file, encoding="utf-8") as f:
+				cfg = json.load(f)
+			config.update(cfg)
+	except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+		pass
+
+	# 2. 纯文本 key 文件（本地测试，gitignore 保护）
+	try:
+		key_file = Path(__file__).parent / "api.txt"
+		if key_file.is_file():
+			key = key_file.read_text(encoding="utf-8").strip()
+			if key:
+				config["api_key"] = key
 	except (FileNotFoundError, PermissionError):
 		pass
-	return "xxxxxxxx"
 
-API_KEY = _load_api_key()
-BASE_URL = "https://api.deepseek.com"
-MODEL = "deepseek-v4-pro"
+	# 3. 环境变量覆盖（最高优先级）
+	env_key = os.environ.get("DEEPSEEK_API_KEY")
+	if env_key:
+		config["api_key"] = env_key
+	env_url = os.environ.get("DEEPSEEK_BASE_URL")
+	if env_url:
+		config["base_url"] = env_url
+	env_model = os.environ.get("DEEPSEEK_MODEL")
+	if env_model:
+		config["model"] = env_model
+
+	return config
+
+_api_config = _load_api_config()
+API_KEY = _api_config["api_key"]
+BASE_URL = _api_config["base_url"]
+MODEL = _api_config["model"]
 
 # System Prompt（从外部文件加载，便于独立编辑）
 
