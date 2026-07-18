@@ -15,10 +15,7 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/common.h"
-
-#define FREQ_WARN_PER_SEC   10000
-#define LAT_WARN_US         10000
-#define ERR_RATE_WARN       0.1
+#include "../include/config.h"
 
 struct syscall_stats {
 	unsigned long long count;
@@ -239,7 +236,7 @@ static void print_report(FILE *out,
 		double rate = (double)s->count / duration_s;
 		double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 		double max_ms = (double)s->max_ns / 1e6;
-		const char *flag = rate > FREQ_WARN_PER_SEC ? " <-- 高频" : "";
+		const char *flag = rate > g_cfg.hot_freq_per_sec ? " <-- 高频" : "";
 		fprintf(out, "  %-22s %10llu %10.0f %8.0f %8.1f%s\n",
 		        syscall_name(entries[i].nr), s->count, rate, avg_us, max_ms, flag);
 	}
@@ -255,7 +252,7 @@ static void print_report(FILE *out,
 		double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 		double max_ms = (double)s->max_ns / 1e6;
 		double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
-		const char *flag = avg_us > LAT_WARN_US ? " <-- 高耗时" : "";
+		const char *flag = avg_us > g_cfg.hot_lat_us ? " <-- 高耗时" : "";
 		fprintf(out, "  %-22s %10llu %10.0f %8.0f %8.1f %7.1f%%%s\n",
 		        syscall_name(entries[i].nr), s->count, rate,
 		        avg_us, max_ms, err_pct, flag);
@@ -287,37 +284,37 @@ static void print_report(FILE *out,
 		double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 		double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
 
-		if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US && err_pct <= ERR_RATE_WARN * 100)
+		if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
 			continue;
 
 		diag_count++;
 		fprintf(out, "\n  [%d] %s", diag_count, syscall_name(entries[i].nr));
 
 		const char *type = NULL;
-		if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US)
+		if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
 			type = "高频 + 高耗时";
-		else if (rate > FREQ_WARN_PER_SEC)
+		else if (rate > g_cfg.hot_freq_per_sec)
 			type = "高频调用";
-		else if (avg_us > LAT_WARN_US)
+		else if (avg_us > g_cfg.hot_lat_us)
 			type = "高耗时";
 		else
 			type = "高错误率";
 		fprintf(out, "  —  %s\n", type);
 
 	fprintf(out, "      调用次数: %llu (%.0f/s, 阈值 %d/s)  |  ""平均耗时: %.0fus (阈值 %d us)  |  最大耗时: %.1fms\n",
-	        s->count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US, (double)s->max_ns / 1e6);
+	        s->count, rate, g_cfg.hot_freq_per_sec, avg_us, g_cfg.hot_lat_us, (double)s->max_ns / 1e6);
 		if (err_pct > 0)
 			fprintf(out, "      错误率: %.1f%% (%llu/%llu)\n", err_pct, s->err_count, s->count);
 
-		if (rate > FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+		if (rate > g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
 			fprintf(out,
 			        "      疑似根因: 事件循环或 busy-poll 导致短耗时系统调用高频重复\n"
 			        "      建议: 检查轮询逻辑，改用阻塞+超时或事件驱动模式\n");
-		else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr))
+		else if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(entries[i].nr))
 			fprintf(out,
 			        "      疑似根因: 事件等待型系统调用，高耗时说明无事件到达或超时设置较长\n"
 			        "      建议: 属正常等待行为；若期望快速响应，检查 fd 活跃度和超时参数\n");
-		else if (avg_us > LAT_WARN_US)
+		else if (avg_us > g_cfg.hot_lat_us)
 			fprintf(out,
 			        "      疑似根因: 系统调用阻塞等待 I/O、锁或网络资源\n"
 			        "      建议: 排查底层资源竞争，考虑异步 I/O 或批量操作\n");
@@ -335,25 +332,25 @@ static void print_report(FILE *out,
 		double avg_us = p->total_count ?
 			(double)p->total_ns / p->total_count / 1000.0 : 0;
 
-		if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+		if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
 			continue;
 
 		pdiag++;
 		fprintf(out, "\n  [进程%d] TID %u (%s)  —  %s\n",
 		        pdiag, p->tid, p->comm,
-		        avg_us > LAT_WARN_US ? "高耗时" : "高频调用");
+		        avg_us > g_cfg.hot_lat_us ? "高耗时" : "高频调用");
 	fprintf(out, "      系统调用总数: %llu (%.0f/s, 阈值 %d/s)  |  ""平均耗时: %.0fus (阈值 %d us)\n",
-	        p->total_count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US);
+	        p->total_count, rate, g_cfg.hot_freq_per_sec, avg_us, g_cfg.hot_lat_us);
 		fprintf(out, "      最多调用: %s (%llu次)  |  耗时最多: %s (%.1fms)\n",
 		        syscall_name(p->top_nr), p->top_nr_count,
 		        syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
 
-		if (avg_us > LAT_WARN_US && is_wait_syscall(p->top_lat_nr))
+		if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(p->top_lat_nr))
 			fprintf(out,
 			        "      疑似根因: 线程主要时间在事件等待 (%s)，属正常 I/O 多路复用行为\n"
 			        "      建议: 无明显异常；若需降低时延，检查 fd 活跃度或调小超时\n",
 			        syscall_name(p->top_lat_nr));
-		else if (avg_us > LAT_WARN_US)
+		else if (avg_us > g_cfg.hot_lat_us)
 			fprintf(out,
 			        "      疑似根因: 线程大量时间消耗在阻塞型系统调用 (%s)\n"
 			        "      建议: 分析 %s 调用路径，考虑异步化或减少阻塞时间\n",
@@ -510,26 +507,26 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 			double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
 
-			if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US && err_pct <= ERR_RATE_WARN * 100)
+			if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
 				continue;
 
 			const char *type = NULL;
 			const char *root_cause = NULL;
 			const char *suggestion = NULL;
 
-			if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US) {
+			if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us) {
 				type = "高频 + 高耗时";
 				root_cause = "系统调用频繁调用且耗时偏高";
 				suggestion = "检查调用频率和阻塞原因，考虑异步化或批量操作";
-			} else if (rate > FREQ_WARN_PER_SEC) {
+			} else if (rate > g_cfg.hot_freq_per_sec) {
 				type = "高频调用";
 				root_cause = "事件循环或 busy-poll 导致短耗时系统调用高频重复";
 				suggestion = "检查轮询逻辑，改用阻塞+超时或事件驱动模式";
-			} else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr)) {
+			} else if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(entries[i].nr)) {
 				type = "高耗时 (事件等待)";
 				root_cause = "事件等待型系统调用，高耗时说明无事件到达或超时设置较长";
 				suggestion = "属正常等待行为；若期望快速响应，检查 fd 活跃度和超时参数";
-			} else if (avg_us > LAT_WARN_US) {
+			} else if (avg_us > g_cfg.hot_lat_us) {
 				type = "高耗时";
 				root_cause = "系统调用阻塞等待 I/O、锁或网络资源";
 				suggestion = "排查底层资源竞争，考虑异步 I/O 或批量操作";
@@ -564,21 +561,21 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 5, 0);
 
 			fprintf(out, "            \"evidence\": [\n");
-			if (rate > FREQ_WARN_PER_SEC && avg_us > LAT_WARN_US)
+			if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
 				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s, 阈值 %d/s), 平均耗时 %.0f us (阈值 %d us), 双高异常\"\n",
-					syscall_name(entries[i].nr), s->count, rate, FREQ_WARN_PER_SEC, avg_us, LAT_WARN_US);
-			else if (rate > FREQ_WARN_PER_SEC)
+					syscall_name(entries[i].nr), s->count, rate, g_cfg.hot_freq_per_sec, avg_us, g_cfg.hot_lat_us);
+			else if (rate > g_cfg.hot_freq_per_sec)
 				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s, 阈值 %d/s), 平均耗时 %.0f us\"\n",
-					syscall_name(entries[i].nr), s->count, rate, FREQ_WARN_PER_SEC, avg_us);
-			else if (avg_us > LAT_WARN_US && is_wait_syscall(entries[i].nr))
+					syscall_name(entries[i].nr), s->count, rate, g_cfg.hot_freq_per_sec, avg_us);
+			else if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(entries[i].nr))
 				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us (阈值 %d us), 事件等待型\"\n",
-					syscall_name(entries[i].nr), s->count, rate, avg_us, LAT_WARN_US);
-			else if (avg_us > LAT_WARN_US)
+					syscall_name(entries[i].nr), s->count, rate, avg_us, g_cfg.hot_lat_us);
+			else if (avg_us > g_cfg.hot_lat_us)
 				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 平均耗时 %.0f us (阈值 %d us)\"\n",
-					syscall_name(entries[i].nr), s->count, rate, avg_us, LAT_WARN_US);
+					syscall_name(entries[i].nr), s->count, rate, avg_us, g_cfg.hot_lat_us);
 			else
 				fprintf(out, "              \"%s 错误率 %.1f%% (阈值 %.0f%%), %llu/%llu 次失败\"\n",
-					syscall_name(entries[i].nr), err_pct, ERR_RATE_WARN * 100, s->err_count, s->count);
+					syscall_name(entries[i].nr), err_pct, g_cfg.hot_err_rate * 100, s->err_count, s->count);
 			fprintf(out, "            ]\n");
 
 			diag++;
@@ -594,17 +591,17 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			double avg_us = p->total_count ?
 				(double)p->total_ns / p->total_count / 1000.0 : 0;
 
-			if (rate <= FREQ_WARN_PER_SEC && avg_us <= LAT_WARN_US)
+			if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
 				continue;
 
-			const char *ptype = avg_us > LAT_WARN_US ? "高耗时" : "高频调用";
+			const char *ptype = avg_us > g_cfg.hot_lat_us ? "高耗时" : "高频调用";
 			const char *proot_cause = NULL;
 			const char *psuggestion = NULL;
 
-			if (avg_us > LAT_WARN_US && is_wait_syscall(p->top_lat_nr)) {
+			if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(p->top_lat_nr)) {
 				proot_cause = "线程主要时间在事件等待，属正常 I/O 多路复用行为";
 				psuggestion = "无明显异常；若需降低时延，检查 fd 活跃度或调小超时";
-			} else if (avg_us > LAT_WARN_US) {
+			} else if (avg_us > g_cfg.hot_lat_us) {
 				proot_cause = "线程大量时间消耗在阻塞型系统调用";
 				psuggestion = "分析调用路径，考虑异步化或减少阻塞时间";
 			} else {
@@ -642,13 +639,13 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 5, 0);
 
 			fprintf(out, "            \"evidence\": [\n");
-			if (avg_us > LAT_WARN_US)
+			if (avg_us > g_cfg.hot_lat_us)
 				fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s), 平均耗时 %.0f us (阈值 %d us), 耗时最多 %s (%.1fms)\"\n",
-					p->tid, p->comm, p->total_count, rate, avg_us, LAT_WARN_US,
+					p->tid, p->comm, p->total_count, rate, avg_us, g_cfg.hot_lat_us,
 					syscall_name(p->top_lat_nr), (double)p->top_lat_ns / 1e6);
 			else
 				fprintf(out, "              \"TID %u (%s): %llu 次系统调用 (%.0f/s, 阈值 %d/s), 最多调用 %s (%llu次)\"\n",
-					p->tid, p->comm, p->total_count, rate, FREQ_WARN_PER_SEC,
+					p->tid, p->comm, p->total_count, rate, g_cfg.hot_freq_per_sec,
 					syscall_name(p->top_nr), p->top_nr_count);
 			fprintf(out, "            ]\n");
 			pdiag++;
@@ -693,12 +690,12 @@ static void usage(const char *prog)
 		"示例:\n"
 		"  sudo %s                       # 默认参数运行\n"
 		"  sudo %s -i 3 -d 60            # 每 3 秒采样，运行 60 秒\n",
-		prog, DEFAULT_INTERVAL, prog, prog);
+		prog, g_cfg.interval, prog, prog);
 }
 
 int run_syscall(int argc, char **argv)
 {
-	int interval = DEFAULT_INTERVAL;
+	int interval = g_cfg.interval;
 	int duration = 0;
 	const char *output_file = NULL;
 

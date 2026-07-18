@@ -26,9 +26,9 @@
 #include "../include/report_md.h"
 #include "../include/cpu_anomaly.h"
 #include "../include/common.h"
+#include "../include/config.h"
 
 // 配置常量
-#define DEFAULT_CPU_THRESHOLD 90.0    // CPU% 异常阈值
 #define CSWITCH_WARN_PER_MIN  30000   // cswitch/min 警告阈值
 #define CSWITCH_CRIT_PER_MIN  50000   // cswitch/min 严重阈值
 #define SCHED_DELAY_WARN_US   5000    // avg 调度延迟 警告阈值 (us)
@@ -1006,17 +1006,17 @@ static void usage(const char *prog)
 		"  sudo %s -p 99 -o /tmp/report.txt       # 启用栈采样，输出到文件\n"
 		"  sudo %s --cpu-threshold 80             # CPU 占用超过 80%% 即视为异常\n"
 		"  sudo %s -s                             # 尝试启用内核调度器详细统计\n",
-		prog, DEFAULT_INTERVAL, DEFAULT_PROFILE_HZ, DEFAULT_CPU_THRESHOLD,
+		prog, g_cfg.interval, g_cfg.cpu_profile_hz, g_cfg.cpu_threshold,
 		prog, prog, prog, prog, prog);
 }
 
-// ─── run_cpu ─────────────────────────────────────────────────────
+// run_cpu
 int run_cpu(int argc, char **argv)
 {
-	int   interval       = DEFAULT_INTERVAL;
+	int   interval       = g_cfg.interval;
 	int   duration       = 0;
-	int   profile_hz     = DEFAULT_PROFILE_HZ;
-	double cpu_threshold = DEFAULT_CPU_THRESHOLD;
+	int   profile_hz     = g_cfg.cpu_profile_hz;
+	double cpu_threshold = g_cfg.cpu_threshold;
 	const char *output_file = NULL;
 
 	static struct option long_opts[] = {

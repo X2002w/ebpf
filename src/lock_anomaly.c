@@ -28,12 +28,10 @@
 #include "lock_anomaly.skel.h"
 #include "../include/lock_anomaly.h"
 #include "../include/common.h"
+#include "../include/config.h"
 
 // 配置常量
-#define FUTEX_WARN_US          10000    // avg futex 等待 > 10ms 警告
-#define FUTEX_CRIT_US          50000    // avg futex 等待 > 50ms 严重
 #define HOT_KEY_RATIO          0.5      // 单键占比 > 50% = 热点锁
-#define BLOCKED_WARN_MS        100      // 阻塞时间 > 100ms/s 警告
 
 // cpu_anomaly 的 pid_stats
 struct cpu_pid_stats {
@@ -382,7 +380,7 @@ static void print_lock_report(FILE *out,
 
 		// 非竞争性 futex 等待: 次数很少 + 长时间等待 = 事件睡眠, 非锁竞争
 		int is_parked = (ls->futex_wait_count <= 3 &&
-		                 futex_avg_us > FUTEX_CRIT_US &&
+		                 futex_avg_us > g_cfg.lock_futex_crit_us &&
 		                 cswitch_pm < 5000);
 
 		if (is_parked) {
@@ -393,7 +391,7 @@ static void print_lock_report(FILE *out,
 
 		// 临界区过大: 多次等待 + avg > 50ms
 		if (!is_anomaly && !is_parked &&
-		    ls->futex_wait_count > 5 && futex_avg_us > FUTEX_CRIT_US) {
+		    ls->futex_wait_count > 5 && futex_avg_us > g_cfg.lock_futex_crit_us) {
 			is_anomaly = 1;
 			subtype = "锁竞争 (临界区过大)";
 			root_cause = "多次 futex 等待时间过长，临界区代码执行耗时严重";
@@ -401,7 +399,7 @@ static void print_lock_report(FILE *out,
 			             "审查临界区代码复杂度，考虑拆分或异步化";
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
 			         "futex 等待 %llu 次, avg %.0fus 超过严重阈值 %dus, max %.0fus",
-			         ls->futex_wait_count, futex_avg_us, FUTEX_CRIT_US, futex_max_us);
+			         ls->futex_wait_count, futex_avg_us, g_cfg.lock_futex_crit_us, futex_max_us);
 		}
 
 		// 热点锁集中争用: 单键占比 > 50%
@@ -435,7 +433,7 @@ static void print_lock_report(FILE *out,
 
 		// 一般锁竞争: avg > 10ms + 多次等待
 		if (!is_anomaly && !is_parked &&
-		    ls->futex_wait_count > 3 && futex_avg_us > FUTEX_WARN_US) {
+		    ls->futex_wait_count > 3 && futex_avg_us > g_cfg.lock_futex_warn_us) {
 			is_anomaly = 1;
 			subtype = "锁竞争";
 			root_cause = "futex 等待时间偏高，存在锁竞争导致性能退化";
@@ -443,7 +441,7 @@ static void print_lock_report(FILE *out,
 			             "排查 futex 等待模式及线程同步策略";
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
 			         "futex 等待 %llu 次, avg %.0fus 超过警告阈值 %dus",
-			         ls->futex_wait_count, futex_avg_us, FUTEX_WARN_US);
+			         ls->futex_wait_count, futex_avg_us, g_cfg.lock_futex_warn_us);
 		}
 
 		// 补充通用证据
@@ -452,7 +450,7 @@ static void print_lock_report(FILE *out,
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
 			         "CPU 占用 %.1f%%, 阻塞时间 %.1fms",
 			         cpu_pct, blocked_ms);
-			if (cs->blocked_ns > (unsigned long long)BLOCKED_WARN_MS * 1000000ULL)
+			if (cs->blocked_ns > (unsigned long long)g_cfg.lock_blocked_warn_ms * 1000000ULL)
 				snprintf(evidence[ev_count++], sizeof(evidence[0]),
 				         "阻塞时间 %.1fms 偏高 — 线程大量时间消耗在等待",
 				         blocked_ms);
@@ -631,7 +629,7 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 			}
 
 			int is_parked = (ls->futex_wait_count <= 3 &&
-			                 futex_avg_us > FUTEX_CRIT_US &&
+			                 futex_avg_us > g_cfg.lock_futex_crit_us &&
 			                 cswitch_pm < 5000);
 			int is_anomaly = 0;
 			const char *subtype = NULL;
@@ -640,7 +638,7 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 
 			if (is_parked) {
 				subtype = "futex 长期等待 (事件睡眠)";
-			} else if (ls->futex_wait_count > 5 && futex_avg_us > FUTEX_CRIT_US) {
+			} else if (ls->futex_wait_count > 5 && futex_avg_us > g_cfg.lock_futex_crit_us) {
 				is_anomaly = 1;
 				subtype = "锁竞争 (临界区过大)";
 				root_cause = "多次 futex 等待时间过长，临界区代码执行耗时严重";
@@ -657,7 +655,7 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 				subtype = "锁竞争 (锁粒度过粗)";
 				root_cause = "主动切换占比高 + futex 等待显著，线程频繁因锁等待让出 CPU";
 				suggestion = "检查线程池与锁的配比；考虑减小锁粒度或分段锁";
-			} else if (ls->futex_wait_count > 3 && futex_avg_us > FUTEX_WARN_US) {
+			} else if (ls->futex_wait_count > 3 && futex_avg_us > g_cfg.lock_futex_warn_us) {
 				is_anomaly = 1;
 				subtype = "锁竞争";
 				root_cause = "futex 等待时间偏高，存在锁竞争导致性能退化";
@@ -777,13 +775,13 @@ static void usage(const char *prog)
 		"  # 配合 stress-ng 复现锁竞争:\n"
 		"  # stress-ng --mutex 8 --timeout 180s &\n"
 		"  # sudo %s -d 180\n",
-		prog, DEFAULT_INTERVAL, DEFAULT_PROFILE_HZ, prog, prog, prog);
+		prog, g_cfg.interval, g_cfg.cpu_profile_hz, prog, prog, prog);
 }
 
 // run_lock
 int run_lock(int argc, char **argv)
 {
-	int interval         = DEFAULT_INTERVAL;
+	int interval         = g_cfg.interval;
 	int duration         = 0;
 	int profile_hz       = 0; // 锁模块默认不启用 perf 采样，用 futex 点栈
 	const char *output_file = NULL;

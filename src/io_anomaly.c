@@ -17,8 +17,8 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
-#define DEFAULT_INTERVAL 3
 #include "../include/common.h"
+#include "../include/config.h"
 
 #define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
 #define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
@@ -1246,12 +1246,12 @@ static void usage(const char *prog)
 		"示例:\n"
 		"  sudo %s                  # 默认参数运行\n"
 		"  sudo %s -i 5 -d 30      # 每 5 秒采样，运行 30 秒\n",
-		prog, DEFAULT_INTERVAL, prog, prog);
+		prog, g_cfg.io_interval, prog, prog);
 }
 
 int run_io(int argc, char **argv)
 {
-	int interval = DEFAULT_INTERVAL;
+	int interval = g_cfg.io_interval;
 	int duration = 0;
 
 	static struct option long_opts[] = {

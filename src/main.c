@@ -18,6 +18,7 @@
 #include "../include/mem_anomaly.h"
 #include "../include/lock_anomaly.h"
 #include "../include/syscall_anomaly.h"
+#include "../include/config.h"
 
 #define VERSION "0.2.0-dev"
 
@@ -54,6 +55,8 @@ static void print_help(const char *prog)
 int main(int argc, char **argv)
 {
 	const char *prog = argv[0];
+
+	config_init();
 
 	if (argc < 2) {
 		print_help(prog);

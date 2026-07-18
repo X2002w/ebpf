@@ -21,18 +21,10 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
-#define DEFAULT_INTERVAL   3
 #include "../include/common.h"
+#include "../include/config.h"
 
 #define MAX_TOP            5
-
-#define DEF_AVAIL_PCT_LO   10.0
-#define DEF_MAJFAULT_HI    200.0
-#define DEF_REFAULT_HI     1000.0
-#define DEF_SWAPIN_HI      500.0
-#define DIRECT_STALL_HI_MS 1.0
-#define RETRY_HI_PS        50.0
-#define FAULT_HI_PS        5000.0
 #define CONSIST_TOL_PCT    15.0
 
 #define MAX_FLT_CACHE 8192
@@ -581,13 +573,13 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
 
   int flag_lowmem  = avail_pct < avail_pct_lo && m->total > 0;
   int flag_major   = r->pgmajfault_ps > majfault_hi;
-  int flag_swap    = (r->pswpin_ps > DEF_SWAPIN_HI || r->pswpout_ps > DEF_SWAPIN_HI)
+  int flag_swap    = (r->pswpin_ps > g_cfg.mem_swapin || r->pswpout_ps > g_cfg.mem_swapin)
                      && swap_used > 0;
-  int flag_refault = r->refault_ps > DEF_REFAULT_HI;
-  int flag_direct  = sys->direct_reclaim_cnt > 0 && avg_stall_ms > DIRECT_STALL_HI_MS;
+  int flag_refault = r->refault_ps > g_cfg.mem_refault;
+  int flag_direct  = sys->direct_reclaim_cnt > 0 && avg_stall_ms > g_cfg.mem_direct_stall_ms;
   int flag_oom     = oom_win > 0;
-  int flag_retry   = retry_ps > RETRY_HI_PS;
-  int flag_fault   = r->pgfault_ps > FAULT_HI_PS;
+  int flag_retry   = retry_ps > g_cfg.mem_retry_ps;
+  int flag_fault   = r->pgfault_ps > g_cfg.mem_fault_ps;
 
   int triggers = flag_lowmem + flag_major + flag_swap + flag_refault +
                  flag_direct + flag_oom + flag_retry;
@@ -676,7 +668,7 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     "    OOM:          %llu 次  %s\n\n",
     anomaly_type, assoc, root_cause,
     avail_pct, avail_pct_lo, flag_lowmem ? "!! 偏低" : "OK",
-    r->pgfault_ps, FAULT_HI_PS, flag_fault ? "!! 偏高" : "OK",
+    r->pgfault_ps, g_cfg.mem_fault_ps, flag_fault ? "!! 偏高" : "OK",
     r->pgmajfault_ps, majfault_hi, flag_major ? "!! 超标" : "OK",
     sys->direct_reclaim_cnt, avg_stall_ms, flag_direct ? "!! 阻塞明显" : "",
     r->refault_ps, flag_refault ? "!! 偏高" : "",
@@ -705,17 +697,17 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
             ev++, r->pswpin_ps, r->pswpout_ps);
   if (flag_refault)
     fprintf(out, "    %d. refault %.0f 页/s (阈值 %.0f), 刚回收的页被立即读回, 缓存严重不足\n",
-            ev++, r->refault_ps, DEF_REFAULT_HI);
+            ev++, r->refault_ps, g_cfg.mem_refault);
   if (flag_direct)
     fprintf(out, "    %d. 触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms (阈值 %.1f ms)\n",
-            ev++, sys->direct_reclaim_cnt, avg_stall_ms, DIRECT_STALL_HI_MS);
+            ev++, sys->direct_reclaim_cnt, avg_stall_ms, g_cfg.mem_direct_stall_ms);
   if (flag_fault)
     fprintf(out, "    %d. 缺页速率 %.0f 次/s, 超出阈值 %.0f, 内存访问密集\n",
-            ev++, r->pgfault_ps, FAULT_HI_PS);
+            ev++, r->pgfault_ps, g_cfg.mem_fault_ps);
   if (flag_retry) {
     double ratio = au->raw ? (double)au->retry / (double)au->raw * 100.0 : 0.0;
     fprintf(out, "    %d. 缺页重试差 %.0f 次/s (阈值 %.0f, 占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\n",
-            ev++, retry_ps, RETRY_HI_PS, ratio);
+            ev++, retry_ps, g_cfg.mem_retry_ps, ratio);
   }
   if (nrow > 0 && rows[0].matched && rows[0].majflt_d > 0)
     fprintf(out, "    %d. 主导进程 %s(%u) major fault 最高: %.0f 次/s\n",
@@ -901,13 +893,13 @@ static void print_mem_json_report(const struct meminfo *m,
 	{
 		int flag_lowmem  = avail_pct < avail_pct_lo && m->total > 0;
 		int flag_major   = r->pgmajfault_ps > majfault_hi;
-		int flag_swap    = (r->pswpin_ps > DEF_SWAPIN_HI || r->pswpout_ps > DEF_SWAPIN_HI)
+		int flag_swap    = (r->pswpin_ps > g_cfg.mem_swapin || r->pswpout_ps > g_cfg.mem_swapin)
 		                   && swap_used > 0;
-		int flag_refault = r->refault_ps > DEF_REFAULT_HI;
-		int flag_direct  = sys->direct_reclaim_cnt > 0 && avg_stall_ms > DIRECT_STALL_HI_MS;
+		int flag_refault = r->refault_ps > g_cfg.mem_refault;
+		int flag_direct  = sys->direct_reclaim_cnt > 0 && avg_stall_ms > g_cfg.mem_direct_stall_ms;
 		int flag_oom     = oom_win > 0;
-		int flag_retry   = retry_ps > RETRY_HI_PS;
-		int flag_fault   = r->pgfault_ps > FAULT_HI_PS;
+		int flag_retry   = retry_ps > g_cfg.mem_retry_ps;
+		int flag_fault   = r->pgfault_ps > g_cfg.mem_fault_ps;
 
 		int triggers = flag_lowmem + flag_major + flag_swap + flag_refault +
 		               flag_direct + flag_oom + flag_retry;
@@ -991,7 +983,7 @@ static void print_mem_json_report(const struct meminfo *m,
 			fprintf(out, "                \"可用内存\": \"%.1f%% (阈值 %.0f%%, %s)\",\n",
 				avail_pct, avail_pct_lo, flag_lowmem ? "!! 偏低" : "OK");
 			fprintf(out, "                \"缺页速率\": \"%.0f 次/s (阈值 %.0f, %s)\",\n",
-				r->pgfault_ps, FAULT_HI_PS, flag_fault ? "!! 偏高" : "OK");
+				r->pgfault_ps, g_cfg.mem_fault_ps, flag_fault ? "!! 偏高" : "OK");
 			fprintf(out, "                \"major fault\": \"%.0f 次/s (阈值 %.0f, %s)\",\n",
 				r->pgmajfault_ps, majfault_hi, flag_major ? "!! 超标" : "OK");
 			fprintf(out, "                \"直接回收\": \"%llu 次 (阻塞 %.2f ms)%s\",\n",
@@ -1034,23 +1026,23 @@ static void print_mem_json_report(const struct meminfo *m,
 			}
 			if (flag_refault) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"refault %.0f 页/s (阈值 %.0f), 刚回收的页被立即读回, 缓存严重不足\"", r->refault_ps, DEF_REFAULT_HI);
+				fprintf(out, "                \"refault %.0f 页/s (阈值 %.0f), 刚回收的页被立即读回, 缓存严重不足\"", r->refault_ps, g_cfg.mem_refault);
 				ev++;
 			}
 			if (flag_direct) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms (阈值 %.1f ms)\"", sys->direct_reclaim_cnt, avg_stall_ms, DIRECT_STALL_HI_MS);
+				fprintf(out, "                \"触发直接回收 %llu 次, 进程分配路径平均阻塞 %.2f ms (阈值 %.1f ms)\"", sys->direct_reclaim_cnt, avg_stall_ms, g_cfg.mem_direct_stall_ms);
 				ev++;
 			}
 			if (flag_fault) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"缺页速率 %.0f 次/s, 超出阈值 %.0f, 内存访问密集\"", r->pgfault_ps, FAULT_HI_PS);
+				fprintf(out, "                \"缺页速率 %.0f 次/s, 超出阈值 %.0f, 内存访问密集\"", r->pgfault_ps, g_cfg.mem_fault_ps);
 				ev++;
 			}
 			if (flag_retry) {
 				if (ev > 0) fprintf(out, ",\n");
 				double ratio = au->raw ? (double)au->retry / (double)au->raw * 100.0 : 0.0;
-				fprintf(out, "                \"缺页重试差 %.0f 次/s (阈值 %.0f, 占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\"", retry_ps, RETRY_HI_PS, ratio);
+				fprintf(out, "                \"缺页重试差 %.0f 次/s (阈值 %.0f, 占全部缺页 %.0f%%), 大量缺页在等待磁盘或争抢锁\"", retry_ps, g_cfg.mem_retry_ps, ratio);
 				ev++;
 			}
 			if (nrow > 0 && rows[0].matched && rows[0].majflt_d > 0) {
@@ -1093,16 +1085,16 @@ static void usage(const char *prog)
     "  sudo %s                 # 默认参数运行\n"
     "  sudo %s -i 5 -d 60      # 每 5 秒采样, 运行 60 秒\n"
     "  sudo %s -a 15 -f 100    # 更敏感的阈值\n",
-    prog, DEFAULT_INTERVAL, DEF_AVAIL_PCT_LO, DEF_MAJFAULT_HI,
+    prog, g_cfg.mem_interval, g_cfg.mem_avail_pct, g_cfg.mem_majfault,
     prog, prog, prog);
 }
 
 int run_mem(int argc, char **argv)
 {
-  int interval = DEFAULT_INTERVAL;
+  int interval = g_cfg.mem_interval;
   int duration = 0;
-  double avail_pct_lo = DEF_AVAIL_PCT_LO;
-  double majfault_hi  = DEF_MAJFAULT_HI;
+  double avail_pct_lo = g_cfg.mem_avail_pct;
+  double majfault_hi  = g_cfg.mem_majfault;
 
   static struct option long_opts[] = {
     {"interval",           required_argument, 0, 'i'},
