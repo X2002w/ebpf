@@ -13,14 +13,28 @@ eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与根因定
 - 硬件架构: x86_64 / ARM64（CI 测试），系统调用名映射通过 `__NR_*` 宏编译期适配架构
 - 运行权限: root (加载 BPF 程序、perf 采样均需要特权)
 
-### 1.2 源码构建依赖
+### 1.2 环境初始化
+
+项目根目录提供 `start.sh` 一键检查脚本，覆盖 C 构建依赖与 AI 诊断环境：
+
+```bash
+./start.sh
+```
+
+脚本自动完成：
+- C 构建工具检查（clang, make, bpftool）
+- 运行时库检查（libbpf, libelf, zlib）
+- Python 虚拟环境创建与依赖安装（ai_analysis/venv）
+- API key 配置检查
+
+### 1.3 源码构建依赖
 
 - clang(19+)（编译用户态代码与 BPF 字节码）
 - libbpf 开发库（链接 `-lbpf -lelf -lz`）
 - bpftool（生成 vmlinux.h 与 skeleton 头文件）
 - make
 
-### 1.3 本机构建
+### 1.4 本机构建
 
 - 拉取仓库代码(git clone git@github.com:X2002w/ebpf.git)
 - 在项目根目录执行下述命令
@@ -34,7 +48,7 @@ make          # 生成 ./eebpf
 
 若报错 `Kernel BTF not found`，说明内核未开启 BTF，无法使用 CO-RE，需更换内核或发行版。
 
-### 1.4 容器化构建（openKylin 环境）
+### 1.5 容器化构建（openKylin 环境）
 
 ```bash
 ./enter-container.sh   # 构建镜像、启动容器并进入 /workspace
@@ -42,6 +56,33 @@ make                   # 容器内构建
 ```
 
 容器由 docker-compose 管理，已挂载宿主机必要目录；运行 BPF 程序需要特权容器。CI（GitHub Actions）会自动构建并发布最新构建/测试镜像。
+
+### 1.6 AI 诊断环境
+
+AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用大模型 API 对 eBPF 采集数据进行跨模块关联分析。
+
+```bash
+# 初始化环境（首次）
+./start.sh
+
+# 配置 API key（二选一）
+echo "sk-your-key" > ai_analysis/api.txt          # 本地测试，gitignore 保护
+# 或编辑 ai_analysis/api_config.json              # 公共配置模板
+
+# 运行 AI 诊断
+./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem,io
+./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m hot,lock
+```
+
+| 参数 | 说明 |
+|---|---|
+| `report_dir` | eebpf 输出的 JSON 目录（默认: `ai_report/`） |
+| `-m, --modules` | 分析模块，逗号分隔，可选 `cpu,io,mem,lock,hot`（默认全部） |
+| `-o, --output` | 输出报告路径（默认: `ai_report/ai_diagnosis.md`） |
+| `--dry-run` | 仅打印 prompt，不调用 API |
+| `--no-thinking` | 隐藏模型思考过程 |
+
+API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt` > `ai_analysis/api_config.json` > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
 
 ---
 
@@ -143,19 +184,22 @@ sudo ./eebpf lock -d 180
 ### 4.1 总体架构
 
 ```
-┌────────────────────────── 用户态 ──────────────────────────┐
-│ main.c 子命令分发                                           │
-│   ├─ cpu_anomaly.c ─┐                                      │
-│   ├─ io_anomaly.c   │  周期性读取 BPF map → 聚合/阈值判定    │
-│   ├─ mem_anomaly.c  ├─ → 根因分析 → 诊断报告                │
-│   ├─ lock_anomaly.c │     (stdout / Markdown / JSON)       │
-│   └─ syscall_anomaly.c ┘                                   │
-└──────────────────────────┬─────────────────────────────────┘
+┌────────────────────────── 用户态 ───────────────────────────┐
+│ main.c 子命令分发                                            │
+│   ├─ cpu_anomaly.c ─┐                                       │
+│   ├─ io_anomaly.c   │  周期性读取 BPF map → 聚合/阈值判定     │
+│   ├─ mem_anomaly.c  ├─ → 根因分析 → 诊断报告                 │
+│   ├─ lock_anomaly.c │     (stdout / Markdown / JSON)        │
+│   └─ syscall_anomaly.c ┘                                    │
+├─────────────────────────────────────────────────────────────┤
+│ ai_analysis/ (Python)                                       │
+│   caller.py → 读取 JSON → 调用 LLM → 跨模块关联诊断报告        │
+└──────────────────────────┬──────────────────────────────────┘
                     BPF map（内核态聚合统计）
-┌──────────────────────────┴───────────── 内核态 ────────────┐
-│ *.bpf.c：tracepoint / kprobe / perf event 挂载点            │
-│ sched_switch、block_rq_*、page_fault、futex、sys_enter/exit │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────┴───────────── 内核态 ─────────────┐
+│ *.bpf.c：tracepoint / kprobe / perf event 挂载点             │
+│ sched_switch、block_rq_*、page_fault、futex、sys_enter/exit  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 - **CO-RE (Compile Once, Run Everywhere)**：基于内核 BTF 生成 `vmlinux.h`，BPF 程序一次编译可跨内核版本运行，无需目标机器安装内核头文件。
@@ -176,7 +220,7 @@ sudo ./eebpf lock -d 180
 
 - 纯文本诊断：Unicode 分隔线 + 中文标签 + 英文单位，含"疑似根因"与"建议"。
 - Markdown 报告（`report_md.c`）：系统概览、TOP 进程表格、异常证据链、可折叠调用栈。
-- JSON（`cpu`/`lock` 的 `-j`）：供 `ai_test/` 中的 AI 诊断脚本二次分析。
+- JSON（`cpu`/`lock` 的 `-j`）：供 `ai_analysis/` 中的 AI 诊断脚本进行多模块联合分析和跨模块关联根因推断。
 
 ### 4.4 公共基础设施
 

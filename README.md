@@ -20,6 +20,8 @@
 - [x] 将下载LLVM从build test action移到dockr build action 中
 - [ ] 将各部分监测程序的公共宏放置再一起 or 使用config文件编辑
 - [ ] 使用sqlite存储历史数据
-- [ ] 加前瞻性6.1, 6.6, 6.12, stable —— stable 标签自动追新内核，将来内核更新破坏兼容性时 CI 会第一时间红 
-- [ ] 重构文档输出报告
+- [x] 加前瞻性6.1, 6.6, 6.12, stable —— stable 标签自动追新内核，将来内核更新破坏兼容性时 CI 会第一时间红 
+- [x] 重构文档输出报告
+- [x] AI 多模块联合诊断 (ai_analysis/)
+- [ ] 打包发布（make install + pyproject.toml）
 
