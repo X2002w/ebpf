@@ -17,8 +17,9 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
-
 #define DEFAULT_INTERVAL 3
+#include "../include/common.h"
+
 #define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
 #define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
 #define MAX_ACTIVE_DEVS 256

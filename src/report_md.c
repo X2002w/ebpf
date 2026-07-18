@@ -6,11 +6,11 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "../include/report_md.h"
+#include "../include/common.h"
 
 #define MAX_LINE 4096
 #define MAX_STACK 16
 #define MAX_COLS  32
-#define MAX_ROWS  256
 #define MAX_EV    16
 #define MAX_FRAMES 256
 

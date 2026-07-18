@@ -27,14 +27,12 @@
 #include "cpu_anomaly.skel.h"
 #include "lock_anomaly.skel.h"
 #include "../include/lock_anomaly.h"
+#include "../include/common.h"
 
 // 配置常量
-#define DEFAULT_INTERVAL       5
-#define DEFAULT_PROFILE_HZ     99
 #define FUTEX_WARN_US          10000    // avg futex 等待 > 10ms 警告
 #define FUTEX_CRIT_US          50000    // avg futex 等待 > 50ms 严重
 #define HOT_KEY_RATIO          0.5      // 单键占比 > 50% = 热点锁
-#define VOLUNTARY_RATIO_HIGH   0.5      // 主动切换 > 50% = 锁等待模式
 #define BLOCKED_WARN_MS        100      // 阻塞时间 > 100ms/s 警告
 
 // cpu_anomaly 的 pid_stats

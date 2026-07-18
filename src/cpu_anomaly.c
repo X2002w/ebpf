@@ -25,18 +25,16 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/cpu_anomaly.h"
+#include "../include/common.h"
 
-// ─── 配置常量 ────────────────────────────────────────────────────
-#define DEFAULT_INTERVAL      5       // 采样间隔 (秒)
+// 配置常量
 #define DEFAULT_CPU_THRESHOLD 90.0    // CPU% 异常阈值
-#define DEFAULT_PROFILE_HZ    99      // 栈采样频率
 #define CSWITCH_WARN_PER_MIN  30000   // cswitch/min 警告阈值
 #define CSWITCH_CRIT_PER_MIN  50000   // cswitch/min 严重阈值
 #define SCHED_DELAY_WARN_US   5000    // avg 调度延迟 警告阈值 (us)
 #define SCHED_DELAY_CRIT_US   20000   // avg 调度延迟 严重阈值 (us)
 #define BUSYLOOP_CS_PER_MIN   5000    // busy loop 判定: 切换 < 5000/min
 #define STACK_CONC_RATIO      0.8     // 栈集中度: top1 占比 > 80% = 集中
-#define VOLUNTARY_RATIO_HIGH  0.5     // 主动切换占比 > 50% = 偏高
 
 // ─── 统计结构 (必须与 BPF 侧一致) ────────────────────────────────
 // 后续改为统一在 common.h 里定义

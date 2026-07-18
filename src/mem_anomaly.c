@@ -21,10 +21,10 @@
 #include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
-
 #define DEFAULT_INTERVAL   3
+#include "../include/common.h"
+
 #define MAX_TOP            5
-#define MAX_ROWS           256
 
 #define DEF_AVAIL_PCT_LO   10.0
 #define DEF_MAJFAULT_HI    200.0

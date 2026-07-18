@@ -14,8 +14,8 @@
 #include "../include/utils.h"
 #include "../include/report_json.h"
 #include "../include/report_md.h"
+#include "../include/common.h"
 
-#define DEFAULT_INTERVAL    5
 #define FREQ_WARN_PER_SEC   10000
 #define LAT_WARN_US         10000
 #define ERR_RATE_WARN       0.1
