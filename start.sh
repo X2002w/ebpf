@@ -96,7 +96,53 @@ echo ""
 echo "----------------------------------------"
 echo " 检查完毕: 通过 ${PASS}, 失败 ${FAIL}"
 
-if [ "$FAIL" -gt 0 ]; then
-    echo ""
-    echo -e "${RED}仍有缺失的依赖，请手动检查并安装。${NC}"
+# AI 诊断环境
+echo ""
+echo " AI 诊断环境:"
+
+AI_DIR="$(cd "$(dirname "$0")" && pwd)/ai_analysis"
+
+if command -v python3 >/dev/null 2>&1; then
+	check_pass "python3 → $(command -v python3)"
+else
+	check_fail "python3 未安装"
 fi
+
+if [ ! -d "$AI_DIR/venv" ]; then
+	echo -e "  ${YELLOW}[...]${NC} 创建 Python 虚拟环境..."
+	python3 -m venv "$AI_DIR/venv" 2>/dev/null && check_pass "venv 创建完成" || check_fail "venv 创建失败"
+fi
+
+if [ -d "$AI_DIR/venv" ]; then
+	if "$AI_DIR/venv/bin/python" -m pip install -r "$(dirname "$0")/requirements.txt" -q 2>/dev/null; then
+		check_pass "Python 依赖 (openai)"
+	else
+		check_fail "Python 依赖安装失败"
+	fi
+fi
+
+# API key
+KEY_OK=false
+if [ -f "$AI_DIR/api.txt" ]; then
+	KEY=$(tr -d '[:space:]' < "$AI_DIR/api.txt")
+	[ -n "$KEY" ] && [ "$KEY" != "sk-xxxxxxxx" ] && KEY_OK=true
+fi
+[ -n "${DEEPSEEK_API_KEY:-}" ] && KEY_OK=true
+if [ "$KEY_OK" = true ]; then
+	check_pass "API key"
+else
+	check_fail "API key 未配置 (编辑 ai_analysis/api_config.json 或创建 api.txt)"
+fi
+
+print_separator() {
+	echo ""
+	echo "----------------------------------------"
+}
+
+if [ "$FAIL" -gt 0 ]; then
+	echo ""
+	echo -e "${RED}仍有缺失的依赖，请手动检查并安装。${NC}"
+fi
+
+echo ""
+echo -e "运行 AI 诊断: ${GREEN}./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem${NC}"
