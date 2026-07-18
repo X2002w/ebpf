@@ -84,6 +84,57 @@ echo "sk-your-key" > ai_analysis/api.txt          # 本地测试，gitignore 保
 
 API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt` > `ai_analysis/api_config.json` > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
 
+### 1.7 配置文件
+
+eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令行指定。
+
+**文件格式**: `key = value`，`#` 开头为注释行。
+
+**查找路径**（优先级从高到低）:
+
+| 路径 | 说明 |
+|---|---|
+| `./eebpf.conf` | 当前工作目录 |
+| `~/.eebpf.conf` | 用户主目录 |
+| `/etc/eebpf.conf` | 系统级配置 |
+
+三个路径均会加载，后面加载的覆盖前面的值（`./` > `~/` > `/etc/`）。仅需写入要覆盖的项，未写入的项使用内置默认值。
+
+**完整配置项及默认值**（参考项目根目录 `eebpf.conf` 示例文件）:
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `interval` | int | 5 | 全局默认采样间隔（秒） |
+| `cpu_threshold` | double | 90 | CPU 占用异常阈值（%） |
+| `cpu_profile_hz` | int | 99 | CPU perf 栈采样频率（Hz） |
+| `io_interval` | int | 3 | I/O 模块采样间隔（秒） |
+| `mem_interval` | int | 3 | 内存模块采样间隔（秒） |
+| `mem_avail_pct` | double | 10 | 可用内存低水位阈值（%） |
+| `mem_majfault` | double | 200 | major fault 速率异常阈值（次/s） |
+| `mem_refault` | double | 1000 | 缓存未命中异常阈值（次/s） |
+| `mem_swapin` | double | 500 | swap 换入异常阈值（次/s） |
+| `mem_direct_stall_ms` | double | 1 | 直接回收延迟阈值（ms） |
+| `mem_retry_ps` | double | 50 | 内存分配重试阈值（次/s） |
+| `mem_fault_ps` | double | 5000 | 缺页速率阈值（次/s） |
+| `lock_futex_warn_us` | int | 10000 | futex 等待告警阈值（us） |
+| `lock_futex_crit_us` | int | 50000 | futex 等待严重阈值（us） |
+| `lock_blocked_warn_ms` | int | 100 | 阻塞时间告警阈值（ms） |
+| `hot_freq_per_sec` | int | 10000 | 系统调用频率告警（次/s） |
+| `hot_lat_us` | int | 10000 | 系统调用延迟告警（us） |
+| `hot_err_rate` | double | 0.1 | 系统调用错误率告警（0-1） |
+
+**配置示例**:
+
+```ini
+# 在项目目录创建 eebpf.conf，覆盖默认阈值
+interval = 10
+cpu_threshold = 95
+mem_avail_pct = 5
+lock_futex_crit_us = 20000
+```
+
+命令行参数优先级高于配置文件。例如 `./eebpf cpu -i 3` 会忽略配置文件中的 `interval`，使用 3 秒间隔。
+
 ---
 
 ## 2. 使用说明
@@ -235,6 +286,6 @@ sudo ./eebpf lock -d 180
 3. **符号解析精度有限**：调用栈地址通过 `/proc/<pid>/maps` 解析为"模块+偏移"，不解析 DWARF/符号表，无法直接给出函数名；进程退出后栈地址无法回溯（显示原始地址），进程名显示 `<exited>`。
 4. **短生命周期进程可能漏检**：统计按采样间隔批量读取，间隔内创建并退出的进程可能只留下部分指标，/proc 对账数据缺失。
 5. **观测开销**：`hot` 模块追踪全量系统调用，高负载下有可感知开销；cpu/lock 的 perf 栈采样频率越高开销越大，可用 `-p 0` 禁用。
-6. **阈值为静态配置**：异常判定阈值目前编译期确定（部分可经参数调整），尚不支持配置文件持久化（规划中）。
+6. **阈值为静态配置**：异常判定阈值可通过 `eebpf.conf` 配置文件调整，详见 1.7 节。部分参数也可经命令行参数覆盖。
 7. **暂无历史数据存储**：报告为单次快照，SQLite 历史存储与多维关联分析（如 I/O 缓存失效 + 内存抖动）在规划中。
 8. **设备热插拔**：I/O 模块对已移除设备的 map 残留做了主动清理，但采样间隔内移除的设备可能出现一次不完整统计。
