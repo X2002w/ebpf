@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """caller.py — 多模块 eBPF 观测数据联合 AI 诊断分析。
 
-读取 ai_report/ 目录下模块 JSON，结合系统硬件信息，调用 DeepSeek API 生成跨模块关联诊断报告。
+读取 report/ 目录下模块 JSON，结合系统硬件信息，调用 API 生成跨模块关联诊断报告。
 
 用法:
   source ai_analysis/venv/bin/activate
@@ -14,6 +14,7 @@
 import os
 import sys
 import json
+import time
 import argparse
 from pathlib import Path
 
@@ -72,12 +73,24 @@ API_KEY = _api_config["api_key"]
 BASE_URL = _api_config["base_url"]
 MODEL = _api_config["model"]
 
+# API key 未配置校验
+_PLACEHOLDER_KEYS = {"sk-xxxxxxxx", "your-api-key", "sk-your-key"}
+if API_KEY in _PLACEHOLDER_KEYS or not API_KEY:
+    print("[!] API key 未配置。请设置环境变量 DEEPSEEK_API_KEY 或写入 ai_analysis/api.txt",
+          file=sys.stderr)
+    print("[!] 也可编辑 ai_analysis/api_config.json 配置 base_url 与 model",
+          file=sys.stderr)
+
+# DeepSeek 检测，仅对 DeepSeek 后端启用 thinking 参数
+_IS_DEEPSEEK = "deepseek" in BASE_URL
+
 # System Prompt（从外部文件加载，便于独立编辑）
 
 def _load_system_prompt() -> str:
 	prompt_file = Path(__file__).parent / "system_prompt.md"
 	if prompt_file.is_file():
 		return prompt_file.read_text(encoding="utf-8").strip()
+	print("[!] system_prompt.md 未找到，使用内置简化版 prompt", file=sys.stderr)
 	return "你是一名资深的 Linux 系统性能分析专家，请根据 eBPF 采集数据生成诊断报告。"
 
 SYSTEM_PROMPT = _load_system_prompt()
@@ -88,10 +101,12 @@ MAX_TABLE_ROWS = 10  # 每个表格最多保留的行数，控制 token 成本
 
 
 def _trim_rows(rows, max_rows=MAX_TABLE_ROWS):
+	if not rows:
+		return rows
 	if len(rows) <= max_rows:
 		return rows
 	trimmed = rows[:max_rows]
-	col_count = len(trimmed[0]) if trimmed else 1
+	col_count = len(trimmed[0])
 	placeholder = [f"... 共 {len(rows)} 行，已截断" ] + ["..." for _ in range(col_count - 1)]
 	return trimmed + [placeholder]
 
@@ -111,16 +126,25 @@ def read_json(path: str) -> dict:
 
 
 def load_reports(report_dir: str, modules: list = None) -> dict:
-	all_modules = ["cpu", "io", "mem", "lock", "hot"]
+	known = ["cpu", "io", "mem", "lock", "hot"]
 	if modules:
-		all_modules = [m for m in modules if m in all_modules]
+		wanted = []
+		for m in modules:
+			if m in known:
+				wanted.append(m)
+			else:
+				print(f"[!] 未知模块 '{m}'，已跳过 (可选: {', '.join(known)})", file=sys.stderr)
+	else:
+		wanted = known
 	reports = {}
 	base = Path(report_dir)
-	for mod in all_modules:
+	for mod in wanted:
 		path = base / f"{mod}.json"
 		data = read_json(str(path))
 		if data:
 			reports[mod] = data
+		else:
+			print(f"[!] 未找到或解析失败: {path}", file=sys.stderr)
 	return reports
 
 
@@ -150,7 +174,7 @@ def _fmt_kv(title, rows):
 		lines.append("")
 		return lines
 	for r in rows:
-		lines.append(f"- {r['key']}: {r['value']}")
+		lines.append(f"- {r.get('key', '?')}: {r.get('value', '?')}")
 	lines.append("")
 	return lines
 
@@ -164,7 +188,7 @@ def _fmt_findings(findings):
 		lines.append("#### 异常项")
 		lines.append("")
 		for i, f in enumerate(anomalies):
-			lines.append(f"**{i+1}. {f['target']}** — {f.get('subtype', '')}")
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
 			if f.get("root_cause"):
 				lines.append(f"- 根因: {f['root_cause']}")
 			if f.get("suggestion"):
@@ -178,7 +202,7 @@ def _fmt_findings(findings):
 		lines.append("#### 注意事项")
 		lines.append("")
 		for i, f in enumerate(warnings):
-			lines.append(f"**{i+1}. {f['target']}** — {f.get('subtype', '')}")
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
 			if f.get("root_cause"):
 				lines.append(f"- 说明: {f['root_cause']}")
 			lines.append("")
@@ -394,11 +418,11 @@ def main():
 	parser = argparse.ArgumentParser(
 		description="eBPF 多模块联合 AI 诊断分析")
 	parser.add_argument(
-		"report_dir", nargs="?", default="ai_report",
-		help="report 目录路径 (默认: ai_report/)")
+		"report_dir", nargs="?", default="report",
+		help="report 目录路径 (默认: report/)")
 	parser.add_argument(
-		"-o", "--output", default="ai_report/ai_diagnosis.md",
-		help="输出报告文件路径 (默认: ai_report/ai_diagnosis.md)")
+		"-o", "--output", default="report/ai_diagnosis.md",
+		help="输出报告文件路径 (默认: report/ai_diagnosis.md)")
 	parser.add_argument(
 		"-m", "--modules", default="cpu,io,mem,hot,lock",
 		help="分析模块列表，逗号分隔 (默认: cpu,io,mem,hot,lock)")
@@ -450,17 +474,30 @@ def main():
 		print(messages[1]["content"])
 		sys.exit(0)
 
-	# 调用 API
+	# 调用 API（含重试）
 	client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 	print(f"[*] 正在调用 {MODEL} 分析 {len(loaded_mods)} 个模块 ...\n", file=sys.stderr)
 
-	response = client.chat.completions.create(
-		model=MODEL,
-		messages=messages,
-		stream=False,
-		reasoning_effort="high",
-		extra_body={"thinking": {"type": "enabled"}},
-	)
+	response = None
+	for attempt in range(3):
+		try:
+			kwargs = dict(model=MODEL, messages=messages, stream=False)
+			if _IS_DEEPSEEK:
+				kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+			response = client.chat.completions.create(**kwargs)
+			break
+		except Exception as e:
+			print(f"[!] API 调用失败 (尝试 {attempt+1}/3): {e}", file=sys.stderr)
+			if attempt < 2:
+				time.sleep(2 ** attempt)
+
+	if response is None:
+		sys.exit("API 调用失败，已重试 3 次")
+
+	usage = response.usage
+	if usage:
+		cost = usage.prompt_tokens/1e6*0.55 + usage.completion_tokens/1e6*2.19
+		print(f"[*] Token: 输入={usage.prompt_tokens} 输出={usage.completion_tokens} 费用~${cost:.4f}", file=sys.stderr)
 
 	thinking = getattr(response.choices[0].message, "reasoning_content", None)
 	answer = response.choices[0].message.content
@@ -476,9 +513,10 @@ def main():
 		out_dir = os.path.dirname(args.output)
 		if out_dir:
 			os.makedirs(out_dir, exist_ok=True)
-		out = open(args.output, "w")
-		out.write(answer)
-		out.close()
+		tmp = args.output + ".tmp"
+		with open(tmp, "w") as f:
+			f.write(answer)
+		os.replace(tmp, args.output)
 		print(f"[*] 报告已保存到 {args.output}", file=sys.stderr)
 	else:
 		print(answer)
