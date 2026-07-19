@@ -14,6 +14,7 @@
 import os
 import sys
 import json
+import time
 import argparse
 from pathlib import Path
 
@@ -473,14 +474,30 @@ def main():
 		print(messages[1]["content"])
 		sys.exit(0)
 
-	# 调用 API
+	# 调用 API（含重试）
 	client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 	print(f"[*] 正在调用 {MODEL} 分析 {len(loaded_mods)} 个模块 ...\n", file=sys.stderr)
 
-	kwargs = dict(model=MODEL, messages=messages, stream=False)
-	if _IS_DEEPSEEK:
-		kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-	response = client.chat.completions.create(**kwargs)
+	response = None
+	for attempt in range(3):
+		try:
+			kwargs = dict(model=MODEL, messages=messages, stream=False)
+			if _IS_DEEPSEEK:
+				kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+			response = client.chat.completions.create(**kwargs)
+			break
+		except Exception as e:
+			print(f"[!] API 调用失败 (尝试 {attempt+1}/3): {e}", file=sys.stderr)
+			if attempt < 2:
+				time.sleep(2 ** attempt)
+
+	if response is None:
+		sys.exit("API 调用失败，已重试 3 次")
+
+	usage = response.usage
+	if usage:
+		cost = usage.prompt_tokens/1e6*0.55 + usage.completion_tokens/1e6*2.19
+		print(f"[*] Token: 输入={usage.prompt_tokens} 输出={usage.completion_tokens} 费用~${cost:.4f}", file=sys.stderr)
 
 	thinking = getattr(response.choices[0].message, "reasoning_content", None)
 	answer = response.choices[0].message.content
@@ -496,9 +513,10 @@ def main():
 		out_dir = os.path.dirname(args.output)
 		if out_dir:
 			os.makedirs(out_dir, exist_ok=True)
-		out = open(args.output, "w")
-		out.write(answer)
-		out.close()
+		tmp = args.output + ".tmp"
+		with open(tmp, "w") as f:
+			f.write(answer)
+		os.replace(tmp, args.output)
 		print(f"[*] 报告已保存到 {args.output}", file=sys.stderr)
 	else:
 		print(answer)
