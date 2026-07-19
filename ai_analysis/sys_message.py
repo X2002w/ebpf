@@ -187,7 +187,7 @@ def _disk_type(dev_name, model):
         return "SSD"
     if rot == 1:
         return "HDD"
-    # fallback: 关键词匹配
+    # rot==-1 时 rotational 不可读（如 virtio），回落至型号关键词匹配
     for kw in _SSD_KEYWORDS:
         if kw in m:
             return "SSD"
@@ -323,43 +323,43 @@ def collect_all():
 
 def to_text(data: dict) -> str:
     """将采集数据转换为纯文本，供 LLM 解析。"""
-    s = data["system"]
-    c = data["cpu"]
-    m = data["memory"]
-    disks = data["disks"]
+    s = data.get("system", {})
+    c = data.get("cpu", {})
+    m = data.get("memory", {})
+    disks = data.get("disks", [])
 
     lines = [
         "# 当前系统基础信息",
         "",
         "## 系统环境信息",
-        f"主机名: {s['hostname']}",
-        f"OS: {s['os']}",
-        f"内核: {s['kernel']}",
-        f"架构: {s['arch']}",
+        f"主机名: {s.get('hostname', '?')}",
+        f"OS: {s.get('os', '?')}",
+        f"内核: {s.get('kernel', '?')}",
+        f"架构: {s.get('arch', '?')}",
         "",
         "## CPU",
-        f"型号: {c['model']}",
-        f"插槽数: {c['sockets']}  物理核: {c['physical_cores']}  逻辑核: {c['logical_cores']}",
-        f"基频/最大频率: {c['base_freq_khz']} / {c['max_freq_khz']} MHz",
-        f"L1d: {c['l1d_kb']}KB  L1i: {c['l1i_kb']}KB  L2: {c['l2_kb']}KB  L3: {c['l3_kb']}KB",
+        f"型号: {c.get('model', '?')}",
+        f"插槽数: {c.get('sockets', '?')}  物理核: {c.get('physical_cores', '?')}  逻辑核: {c.get('logical_cores', '?')}",
+        f"基频/最大频率: {c.get('base_freq_khz', '?')} / {c.get('max_freq_khz', '?')} MHz",
+        f"L1d: {c.get('l1d_kb', '?')}KB  L1i: {c.get('l1i_kb', '?')}KB  L2: {c.get('l2_kb', '?')}KB  L3: {c.get('l3_kb', '?')}KB",
         "",
         "## 内存",
-        f"总内存: {m['total_gb']} GB  交换空间: {m['swap_gb']} GB",
-        f"脏页阈值: dirty_ratio={m['dirty_ratio_pct']}%  dirty_bg_ratio={m['dirty_background_ratio_pct']}%",
+        f"总内存: {m.get('total_gb', '?')} GB  交换空间: {m.get('swap_gb', '?')} GB",
+        f"脏页阈值: dirty_ratio={m.get('dirty_ratio_pct', '?')}%  dirty_bg_ratio={m.get('dirty_background_ratio_pct', '?')}%",
         "",
         "## 磁盘",
     ]
 
     for d in disks:
         lines.append(
-            f"  {d['name']} ({d['major_minor']}): {d['model']}  "
-            f"类型={d['type']}  "
-            f"容量={d['size_gb']}GB  "
-            f"扇区={d['sector_size']}B  "
-            f"队列深度={d['queue_depth']}  "
-            f"调度器={d['scheduler']}  "
-            f"接口={d['interface']}  "
-            f"估算读速={d['estimated_read_mbps']}MB/s  估算写速={d['estimated_write_mbps']}MB/s"
+            f"  {d.get('name', '?')} ({d.get('major_minor', '?')}): {d.get('model', '?')}  "
+            f"类型={d.get('type', '?')}  "
+            f"容量={d.get('size_gb', '?')}GB  "
+            f"扇区={d.get('sector_size', '?')}B  "
+            f"队列深度={d.get('queue_depth', '?')}  "
+            f"调度器={d.get('scheduler', '?')}  "
+            f"接口={d.get('interface', '?')}  "
+            f"估算读速={d.get('estimated_read_mbps', '?')}MB/s  估算写速={d.get('estimated_write_mbps', '?')}MB/s"
         )
 
     return "\n".join(lines)
