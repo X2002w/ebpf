@@ -152,7 +152,7 @@ def _fmt_kv(title, rows):
 		lines.append("")
 		return lines
 	for r in rows:
-		lines.append(f"- {r['key']}: {r['value']}")
+		lines.append(f"- {r.get('key', '?')}: {r.get('value', '?')}")
 	lines.append("")
 	return lines
 
