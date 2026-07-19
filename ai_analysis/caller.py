@@ -166,7 +166,7 @@ def _fmt_findings(findings):
 		lines.append("#### 异常项")
 		lines.append("")
 		for i, f in enumerate(anomalies):
-			lines.append(f"**{i+1}. {f['target']}** — {f.get('subtype', '')}")
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
 			if f.get("root_cause"):
 				lines.append(f"- 根因: {f['root_cause']}")
 			if f.get("suggestion"):
@@ -180,7 +180,7 @@ def _fmt_findings(findings):
 		lines.append("#### 注意事项")
 		lines.append("")
 		for i, f in enumerate(warnings):
-			lines.append(f"**{i+1}. {f['target']}** — {f.get('subtype', '')}")
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
 			if f.get("root_cause"):
 				lines.append(f"- 说明: {f['root_cause']}")
 			lines.append("")
