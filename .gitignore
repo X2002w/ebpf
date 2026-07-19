@@ -6,6 +6,7 @@ demo/
 *.o
 *.skel.h
 *.swp
+*.swo
 *.json
 tags
 .*/

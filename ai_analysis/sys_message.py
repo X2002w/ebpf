@@ -161,6 +161,9 @@ _SSD_KEYWORDS = [
     "kingston skc", "intel ssd", "intel optane", "crucial ct",
     "sandisk sdss", "sandisk ultra", "toshiba ks", "toshiba xg",
     "sk hynix", "kioxia", "seagate firecuda 5", "pm9", "pm8",
+    "adata", "team group", "pny cs", "sabrent", "corsair mp",
+    "wd green sn", "wd red sn", "seagate barracuda 1", "patriot",
+    "samsung 9", "micron 7", "kioxia exceria", "hynix gold p31",
 ]
 
 
