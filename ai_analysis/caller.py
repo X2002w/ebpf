@@ -88,10 +88,12 @@ MAX_TABLE_ROWS = 10  # 每个表格最多保留的行数，控制 token 成本
 
 
 def _trim_rows(rows, max_rows=MAX_TABLE_ROWS):
+	if not rows:
+		return rows
 	if len(rows) <= max_rows:
 		return rows
 	trimmed = rows[:max_rows]
-	col_count = len(trimmed[0]) if trimmed else 1
+	col_count = len(trimmed[0])
 	placeholder = [f"... 共 {len(rows)} 行，已截断" ] + ["..." for _ in range(col_count - 1)]
 	return trimmed + [placeholder]
 
