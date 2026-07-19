@@ -421,8 +421,8 @@ def main():
 		"report_dir", nargs="?", default="report",
 		help="report 目录路径 (默认: report/)")
 	parser.add_argument(
-		"-o", "--output", default="report/ai_diagnosis.md",
-		help="输出报告文件路径 (默认: report/ai_diagnosis.md)")
+		"-o", "--output", default="ai_report/ai_diagnosis.md",
+		help="输出报告文件路径 (默认: ai_report/ai_diagnosis.md)")
 	parser.add_argument(
 		"-m", "--modules", default="cpu,io,mem,hot,lock",
 		help="分析模块列表，逗号分隔 (默认: cpu,io,mem,hot,lock)")
@@ -514,10 +514,15 @@ def main():
 		if out_dir:
 			os.makedirs(out_dir, exist_ok=True)
 		tmp = args.output + ".tmp"
-		with open(tmp, "w") as f:
-			f.write(answer)
-		os.replace(tmp, args.output)
-		print(f"[*] 报告已保存到 {args.output}", file=sys.stderr)
+		try:
+			with open(tmp, "w") as f:
+				f.write(answer)
+			os.replace(tmp, args.output)
+			print(f"[*] 报告已保存到 {args.output}", file=sys.stderr)
+		except PermissionError:
+			sys.exit(f"无写入权限: {args.output}\n"
+				f"report/ 目录可能由 root 创建 (sudo ./eebpf)，请执行:\n"
+				f"  sudo chown -R $USER:$USER {out_dir or args.output}")
 	else:
 		print(answer)
 
