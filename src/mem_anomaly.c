@@ -918,7 +918,23 @@ static void print_mem_json_report(const struct meminfo *m,
 			json_kv_str(out, 4, "suggestion", "系统内存状态正常", 0);
 
 			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
-			json_kv_str(out, 4, "time_window", buf, 1);
+			json_kv_str(out, 4, "time_window", buf, 0);
+
+			json_obj_begin(out, 4, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f%% (阈值 %.0f%%, OK)", avail_pct, avail_pct_lo);
+			json_kv_str(out, 5, "可用内存", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f 次/s (阈值 %.0f, OK)", r->pgfault_ps, g_cfg.mem_fault_ps);
+			json_kv_str(out, 5, "缺页速率", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f 次/s (阈值 %.0f, OK)", r->pgmajfault_ps, majfault_hi);
+			json_kv_str(out, 5, "major fault", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f 页/s (阈值 %.0f, OK)", r->refault_ps, g_cfg.mem_refault);
+			json_kv_str(out, 5, "refault", kmbuf, 1);
+			json_obj_end(out, 4, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			fprintf(out, "              \"内存可用率、缺页速率、换页、直接回收等指标均在正常范围\"\n");
+			fprintf(out, "            ]\n");
 			fprintf(out, "            }");
 		} else {
 			const char *anomaly_type, *root_cause;

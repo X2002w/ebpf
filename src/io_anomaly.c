@@ -1222,7 +1222,19 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			json_kv_str(out, 5, "suggestion", "所有设备指标在正常范围内", 0);
 
 			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
-			json_kv_str(out, 5, "time_window", buf, 1);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f", (double)diag_total_ios / interval_s);
+			json_kv_str(out, 6, "全局 IOPS", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f%%", diag_top3_pct);
+			json_kv_str(out, 6, "热点文件 IOPS 占比", kmbuf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			fprintf(out, "              \"所有块设备 I/O 时延、队列深度、缓存命中率均在正常范围\"\n");
+			fprintf(out, "            ]\n");
 			fprintf(out, "          }");
 			}
 		fprintf(out, "\n");
