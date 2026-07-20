@@ -256,6 +256,7 @@ static void render_diagnosis(FILE *in, FILE *out, const char *title)
 		seq++;
 		char target[256] = {}, subtype[256] = {};
 		char root_cause[1024] = {}, suggestion[1024] = {};
+		char time_window[128] = {};
 		int is_anomaly = 0;
 		char evidence[MAX_EV][512];
 		int nev = 0;
@@ -293,12 +294,14 @@ static void render_diagnosis(FILE *in, FILE *out, const char *title)
 			if (has(line, "\"subtype\":")) extract_str(line, subtype, sizeof(subtype));
 			if (has(line, "\"root_cause\":")) extract_str(line, root_cause, sizeof(root_cause));
 			if (has(line, "\"suggestion\":")) extract_str(line, suggestion, sizeof(suggestion));
+			if (has(line, "\"time_window\":")) extract_str(line, time_window, sizeof(time_window));
 		}
 
 		// 渲染
 		fprintf(out, "## [%d] %s\n\n", seq, target[0] ? target : "(unknown)");
 		fprintf(out, "**状态**: %s", is_anomaly ? "异常" : "正常");
 		if (subtype[0]) fprintf(out, " — *%s*", subtype);
+		if (time_window[0]) fprintf(out, "\n**时间窗口**: %s", time_window);
 		fprintf(out, "\n\n");
 
 		if (nkm > 0) {
