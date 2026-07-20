@@ -548,6 +548,9 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_kv_str(out, 5, "root_cause", root_cause, 0);
 			json_kv_str(out, 5, "suggestion", suggestion, 0);
 
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
 			json_obj_begin(out, 5, "key_metrics");
 			char kmbuf[128];
 			snprintf(kmbuf, sizeof(kmbuf), "%llu (%.0f/s)", s->count, rate);
@@ -625,6 +628,9 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_kv_str(out, 5, "root_cause", proot_cause, 0);
 			json_kv_str(out, 5, "suggestion", psuggestion, 0);
 
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
 			json_obj_begin(out, 5, "key_metrics");
 			char kmbuf[128];
 			snprintf(kmbuf, sizeof(kmbuf), "%llu (%.0f/s)", p->total_count, rate);
@@ -659,7 +665,10 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 				json_kv_bool(out, 5, "is_anomaly", 0, 0);
 				json_kv_str(out, 5, "subtype", "正常", 0);
 				json_kv_str(out, 5, "root_cause", "未检测到明显热点", 0);
-				json_kv_str(out, 5, "suggestion", "当前系统调用指标在正常范围内", 1);
+				json_kv_str(out, 5, "suggestion", "当前系统调用指标在正常范围内", 0);
+
+				snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
+				json_kv_str(out, 5, "time_window", buf, 1);
 				fprintf(out, "          }");
 			}
 		fprintf(out, "\n");

@@ -1159,6 +1159,9 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			json_kv_str(out, 5, "suggestion",
 				"审查 I/O 调度策略、扩展队列深度或优化热点文件访问模式", 0);
 
+				snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+				json_kv_str(out, 5, "time_window", buf, 0);
+
 			json_obj_begin(out, 5, "key_metrics");
 			char kmbuf[128];
 			snprintf(kmbuf, sizeof(kmbuf), "%.1f us (阈值: %.0f us)", p99_us, p99_hi);
@@ -1216,7 +1219,10 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			json_kv_bool(out, 5, "is_anomaly", 0, 0);
 			json_kv_str(out, 5, "subtype", "正常", 0);
 			json_kv_str(out, 5, "root_cause", "未检测到明显 I/O 异常", 0);
-			json_kv_str(out, 5, "suggestion", "所有设备指标在正常范围内", 1);
+			json_kv_str(out, 5, "suggestion", "所有设备指标在正常范围内", 0);
+
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+			json_kv_str(out, 5, "time_window", buf, 1);
 			fprintf(out, "          }");
 			}
 		fprintf(out, "\n");

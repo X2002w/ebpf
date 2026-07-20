@@ -915,7 +915,10 @@ static void print_mem_json_report(const struct meminfo *m,
 			json_kv_bool(out, 4, "is_anomaly", 0, 0);
 			json_kv_str(out, 4, "subtype", "正常", 0);
 			json_kv_str(out, 4, "root_cause", "未检测到明显内存抖动", 0);
-			json_kv_str(out, 4, "suggestion", "系统内存状态正常", 1);
+			json_kv_str(out, 4, "suggestion", "系统内存状态正常", 0);
+
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+			json_kv_str(out, 4, "time_window", buf, 1);
 			fprintf(out, "            }");
 		} else {
 			const char *anomaly_type, *root_cause;

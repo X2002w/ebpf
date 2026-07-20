@@ -672,6 +672,9 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 			json_kv_str(out, 5, "root_cause", root_cause ? root_cause : "", 0);
 			json_kv_str(out, 5, "suggestion", suggestion ? suggestion : "", 0);
 
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
 			json_obj_begin(out, 5, "key_metrics");
 			snprintf(buf, sizeof(buf), "%llu 次", ls->futex_wait_count);
 			json_kv_str(out, 6, "futex 等待次数", buf, 0);
