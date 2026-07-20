@@ -998,6 +998,9 @@ static void print_mem_json_report(const struct meminfo *m,
 			fprintf(out, "              \"root_cause\": \"%s\",\n", root_cause);
 			fprintf(out, "              \"suggestion\": \"结合 dmesg/OOM 日志进一步排查，关注 top 进程内存增长趋势\",\n");
 
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+			fprintf(out, "              \"time_window\": \"%s\",\n", buf);
+
 			fprintf(out, "              \"key_metrics\": {\n");
 			fprintf(out, "                \"可用内存\": \"%.1f%% (阈值 %.0f%%, %s)\",\n",
 				avail_pct, avail_pct_lo, flag_lowmem ? "!! 偏低" : "OK");
