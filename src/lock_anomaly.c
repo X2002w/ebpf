@@ -689,8 +689,54 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 			snprintf(buf, sizeof(buf), "%.1f%%", cpu_pct);
 			json_kv_str(out, 6, "CPU 占用", buf, 0);
 			snprintf(buf, sizeof(buf), "%.0f/min (主动: %llu)", cswitch_pm, cs->cswitch_voluntary);
-			json_kv_str(out, 6, "上下文切换", buf, 1);
-			json_obj_end(out, 5, 1);
+			json_kv_str(out, 6, "上下文切换", buf, 0);
+			if (proc_hot_keys > 0) {
+				snprintf(buf, sizeof(buf), "%d 个, max %.1fms", proc_hot_keys, (double)proc_hot_max_ns / 1e6);
+				json_kv_str(out, 6, "热点锁", buf, 0);
+			}
+			snprintf(buf, sizeof(buf), "%.0f%% (主动)", vol_ratio * 100.0);
+			json_kv_str(out, 6, "主动切换占比", buf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			int ev = 0;
+			if (is_parked) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"futex 等待 %llu 次, avg %.0fus — 属正常事件等待/线程睡眠\"",
+					ls->futex_wait_count, futex_avg_us);
+				ev++;
+			}
+			if (is_anomaly && subtype && strstr(subtype, "临界区过大")) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"futex 等待 %llu 次, avg %.0fus 超过严重阈值 %dus, max %.0fus\"",
+					ls->futex_wait_count, futex_avg_us, g_cfg.lock_futex_crit_us, futex_max_us);
+				ev++;
+			}
+			if (is_anomaly && subtype && strstr(subtype, "热点锁集中")) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"TGID %u 内 %d 个热点锁占总 futex 等待集中\"",
+					tgid, proc_hot_keys);
+				ev++;
+			}
+			if (is_anomaly && subtype && strstr(subtype, "锁粒度过粗")) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"主动切换占比 %.0f%%, futex 等待 %llu 次, avg %.0fus\"",
+					vol_ratio * 100.0, ls->futex_wait_count, futex_avg_us);
+				ev++;
+			}
+			if (is_anomaly && subtype && !strstr(subtype, "临界区过大") && !strstr(subtype, "热点锁集中") && !strstr(subtype, "锁粒度过粗")) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"futex 等待 %llu 次, avg %.0fus 超过警告阈值 %dus\"",
+					ls->futex_wait_count, futex_avg_us, g_cfg.lock_futex_warn_us);
+				ev++;
+			}
+			if (is_anomaly) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"CPU 占用 %.1f%%, 阻塞时间 %.1fms\"",
+					cpu_pct, blocked_ms);
+				ev++;
+			}
+			fprintf(out, "\n            ]\n");
 
 			diag++;
 			json_obj_end(out, 4, 1);

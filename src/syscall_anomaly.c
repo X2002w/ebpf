@@ -668,7 +668,20 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 				json_kv_str(out, 5, "suggestion", "当前系统调用指标在正常范围内", 0);
 
 				snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
-				json_kv_str(out, 5, "time_window", buf, 1);
+				json_kv_str(out, 5, "time_window", buf, 0);
+
+				json_obj_begin(out, 5, "key_metrics");
+				snprintf(buf, sizeof(buf), "%llu (%.0f/s)", grand_total, (double)grand_total / duration_s);
+				json_kv_str(out, 6, "总调用数", buf, 0);
+				snprintf(buf, sizeof(buf), "%.1fms", (double)grand_ns / 1e6);
+				json_kv_str(out, 6, "总耗时", buf, 0);
+				snprintf(buf, sizeof(buf), "%llu (%.1f%%)", grand_err, grand_total > 0 ? (double)grand_err / grand_total * 100.0 : 0);
+				json_kv_str(out, 6, "错误数", buf, 1);
+				json_obj_end(out, 5, 0);
+
+				fprintf(out, "            \"evidence\": [\n");
+				fprintf(out, "              \"所有系统调用频率、耗时、错误率均在正常阈值范围内\"\n");
+				fprintf(out, "            ]\n");
 				fprintf(out, "          }");
 			}
 		fprintf(out, "\n");
