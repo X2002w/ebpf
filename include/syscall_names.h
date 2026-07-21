@@ -3,7 +3,7 @@
 
 #include <sys/syscall.h>
 
-// 系统调用号因架构而异（x86_64 与 ARM64/RISC-V 的 asm-generic 编号不同），
+// 系统调用号因架构而异（x86_64 与 ARM64 的 asm-generic 编号不同），
 // 通过 __NR_* 宏在编译期取本机架构的编号，本架构不存在的调用自动跳过
 static const char *syscall_names[] = {
 #ifdef __NR_read
