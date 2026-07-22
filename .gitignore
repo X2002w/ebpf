@@ -18,7 +18,7 @@ ai_analysis/__pycache__/
 
 !README.md
 !requirements.txt
-!ai_analysis/report.md
-!ai_analysis/api_config.json
+!ai_analysis/*.md
+!ai_analysis/*.json
 !report/*.md
 !docs/*
