@@ -60,10 +60,17 @@ hot_err_rate = 0.1
 
 ## 输出格式
 
-诊断报告包含两类输出：
+诊断报告输出到项目根目录下的 `report/` 目录，使用 `-j` 标志后自动创建。
 
-- **Markdown 报告**: 可读性强的格式化诊断报告（`report/<module>.md`）
-- **JSON 报告**: 结构化数据，供 AI 诊断模块或外部工具消费（`report/<module>.json`）
+| 文件 | 说明 |
+|------|------|
+| `report/<module>.json` | 结构化 JSON 诊断数据 |
+| `report/<module>.md` | JSON 自动渲染的 Markdown 报告 |
+| `report/demo_summary.md` | 场景复现测试汇总报告（`scripts/reproduce.sh` 生成） |
+| `report/benchmark.md` | 性能基准测试报告（`scripts/bench.sh` 生成） |
+
+- **Markdown 报告**: 可读性强的格式化诊断报告
+- **JSON 报告**: 结构化数据，供 AI 诊断模块或外部工具消费
 
 JSON 格式详见 [docs/json-schema.md](docs/json-schema.md)。
 
@@ -157,6 +164,6 @@ GitHub Actions 覆盖三类自动化验证（详见 [docs/compat-matrix.md](docs
 - [x] 重构文档输出报告
 - [x] AI 多模块联合诊断 (ai_analysis/)
 - [ ] 打包发布（make install + pyproject.toml）
-- [ ] 添加各文档之间的相互引用
+- [x] 添加各文档之间的相互引用
 - [ ] 修正report报告路径默认为项目根目录下report目录
 - [ ] 当前项目无并发,考虑将py调用大模型更换为curl调用
