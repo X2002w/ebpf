@@ -88,7 +88,7 @@ run_scenario() {
 	local json_file="$OUT_DIR/${module}_demo.json"
 	local md_file="$OUT_DIR/${module}_demo.md"
 
-	"$EEBPF" "$module" -d "$EEBPF_DUR" >/dev/null 2>&1
+	"$EEBPF" "$module" -j -d "$EEBPF_DUR" >/dev/null 2>&1
 
 	# 停止注入
 	dim "  停止注入负载..."

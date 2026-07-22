@@ -183,50 +183,72 @@ sudo ./eebpf lock -d 180
 
 ### 3.1 公共参数
 
+所有子命令均支持的全局参数：
+
 | 参数 | 说明 |
 |---|---|
 | `-i, --interval <秒>` | 采样间隔，必须 >= 1 |
 | `-d, --duration <秒>` | 总运行时长，0 表示持续运行直到 Ctrl-C（默认: 0） |
-| `-o, --output <文件路径>` | 输出到文件（默认: 标准输出，`io`/`mem` 暂不支持） |
+| `-j, --json` | 输出 JSON + Markdown 报告到 `report/` 目录 |
 | `-h, --help` | 显示帮助信息 |
+
+`-o, --output <文件路径>` 所有子命令均支持，将纯文本报告输出到指定文件（默认: 标准输出）。
 
 ### 3.2 cpu
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-i, --interval <秒>` | 5 | 采样间隔 |
+| `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
+| `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
 | `-p, --profile <Hz>` | 99 | perf 栈采样频率，0 表示禁用 |
 | `-s, --schedstats` | 关 | 尝试开启内核 `sched_schedstats` 详细统计 |
 | `--cpu-threshold <%>` | 90 | CPU 占用异常判定阈值 |
-| `-j, --json` | 关 | 额外写入 report.json，供外部程序（如 AI 诊断）解析 |
+| `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
+| `-h, --help` | - | 显示帮助信息 |
 
 ### 3.3 io
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-i, --interval <秒>` | 3 | 采样间隔 |
+| `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
+| `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
+| `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
+| `-h, --help` | - | 显示帮助信息 |
 
 ### 3.4 mem
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-i, --interval <秒>` | 3 | 采样间隔 |
+| `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
+| `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
 | `-a, --avail-threshold <百分比>` | 10 | 可用内存低水位阈值，低于视为异常 |
 | `-f, --majfault-threshold <次/s>` | 200 | major fault 速率异常阈值 |
+| `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
+| `-h, --help` | - | 显示帮助信息 |
 
 ### 3.5 lock
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-i, --interval <秒>` | 5 | 采样间隔 |
+| `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
+| `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
 | `-p, --profile <Hz>` | 0（禁用） | perf 栈采样频率，锁模块默认使用 futex 挂载点采栈 |
-| `-j, --json` | 关 | 额外写入 report.json |
+| `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
+| `-h, --help` | - | 显示帮助信息 |
 
 ### 3.6 hot
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
 | `-i, --interval <秒>` | 5 | 采样间隔 |
+| `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
+| `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
+| `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
+| `-h, --help` | - | 显示帮助信息 |
 
 ---
 

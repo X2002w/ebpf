@@ -1259,37 +1259,50 @@ static void usage(const char *prog)
 		"选项:\n"
 		"  -i, --interval <秒>   采样间隔（默认: %d）\n"
 		"  -d, --duration <秒>   总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -o, --output <路径>   输出到文件（默认: 标准输出）\n"
+		"  -j, --json            输出 JSON + Markdown 报告到 report/ 目录\n"
 		"  -h, --help            显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                  # 默认参数运行\n"
-		"  sudo %s -i 5 -d 30      # 每 5 秒采样，运行 30 秒\n",
-		prog, g_cfg.io_interval, prog, prog);
+		"  sudo %s -i 5 -d 30      # 每 5 秒采样，运行 30 秒\n"
+		"  sudo %s -j -d 30        # 输出 JSON 诊断报告\n",
+		prog, g_cfg.io_interval, prog, prog, prog);
 }
 
 int run_io(int argc, char **argv)
 {
 	int interval = g_cfg.io_interval;
 	int duration = 0;
+	int json_output = 0;
+	const char *output_file = NULL;
 
 	static struct option long_opts[] = {
 		{"interval", required_argument, 0, 'i'},
 		{"duration", required_argument, 0, 'd'},
+		{"output",   required_argument, 0, 'o'},
+		{"json",     no_argument,       0, 'j'},
 		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "i:d:h", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:jh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
+		case 'o': output_file = optarg; break;
+		case 'j': json_output = 1; break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
 	}
 
 	if (check_interval(interval) != 0)
+		return 1;
+
+	FILE *out = open_output(output_file);
+	if (!out)
 		return 1;
 
 	signal(SIGINT, on_signal);
@@ -1350,10 +1363,10 @@ int run_io(int argc, char **argv)
 	while (!exiting) {
 		sleep(interval);
 
-		print_io_report(stdout, stats_fd, req_fd, (double)interval);
-		print_cache_thrash_report(stdout, block_hist_fd);
-		print_hotfile_report(stdout, hotfile_stats_fd, (double)interval);
-		print_diagnosis(stdout, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
+		print_io_report(out, stats_fd, req_fd, (double)interval);
+		print_cache_thrash_report(out, block_hist_fd);
+		print_hotfile_report(out, hotfile_stats_fd, (double)interval);
+		print_diagnosis(out, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
 
 		if (exiting || (duration > 0 && time(NULL) - start >= duration))
 			break;
@@ -1363,12 +1376,15 @@ int run_io(int argc, char **argv)
 		reset_block_read_hist(block_hist_fd);
 	}
 
-	print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
-	json_to_markdown("report/io.json", "report/io.md");
+	if (json_output) {
+		print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
+		json_to_markdown("report/io.json", "report/io.md");
+	}
 
 	fprintf(stderr, "[*] 正在退出...\n");
 	io_anomaly_bpf__destroy(skel);
   hotfile_bpf__destroy(hot_skel);
+	if (output_file) fclose(out);
 
 	return 0;
 }

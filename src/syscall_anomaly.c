@@ -707,34 +707,39 @@ static void usage(const char *prog)
 		"  -i, --interval <秒>      采样间隔（默认: %d）\n"
 		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
 		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
+		"  -j, --json               输出 JSON + Markdown 报告到 report/ 目录\n"
 		"  -h, --help               显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                       # 默认参数运行\n"
-		"  sudo %s -i 3 -d 60            # 每 3 秒采样，运行 60 秒\n",
-		prog, g_cfg.interval, prog, prog);
+		"  sudo %s -i 3 -d 60            # 每 3 秒采样，运行 60 秒\n"
+		"  sudo %s -j -d 30              # 输出 JSON 诊断报告\n",
+		prog, g_cfg.interval, prog, prog, prog);
 }
 
 int run_syscall(int argc, char **argv)
 {
 	int interval = g_cfg.interval;
 	int duration = 0;
+	int json_output = 0;
 	const char *output_file = NULL;
 
 	static struct option long_opts[] = {
 		{"interval", required_argument, 0, 'i'},
 		{"duration", required_argument, 0, 'd'},
 		{"output",   required_argument, 0, 'o'},
+		{"json",     no_argument,       0, 'j'},
 		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "i:d:o:h", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:jh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
+		case 'j': json_output = 1; break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
@@ -790,8 +795,10 @@ int run_syscall(int argc, char **argv)
 		print_report(out, entries, n, pids, pn, interval_ns);
 
 		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-			print_syscall_json_report(entries, n, pids, pn, interval_ns);
-			json_to_markdown("report/hot.json", "report/hot.md");
+			if (json_output) {
+				print_syscall_json_report(entries, n, pids, pn, interval_ns);
+				json_to_markdown("report/hot.json", "report/hot.md");
+			}
 		}
 
 		free(entries);

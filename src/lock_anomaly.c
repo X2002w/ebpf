@@ -814,9 +814,8 @@ static void usage(const char *prog)
 		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
 		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
 		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
+		"  -j, --json               输出 JSON + Markdown 报告到 report/ 目录\n"
 		"  -h, --help               显示本帮助信息\n"
-		"\n"
-		"报告默认输出到 report/lock.json 和 report/lock.md。\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                            # 默认参数运行\n"
@@ -833,23 +832,26 @@ int run_lock(int argc, char **argv)
 	int interval         = g_cfg.interval;
 	int duration         = 0;
 	int profile_hz       = 0; // 锁模块默认不启用 perf 采样，用 futex 点栈
+	int json_output      = 0;
 	const char *output_file = NULL;
 	static struct option long_opts[] = {
 		{"interval", required_argument, 0, 'i'},
 		{"duration", required_argument, 0, 'd'},
 		{"output",   required_argument, 0, 'o'},
 		{"profile",  required_argument, 0, 'p'},
+		{"json",     no_argument,       0, 'j'},
 		{"help",     no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "i:d:o:p:h", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:p:jh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
 		case 'p': profile_hz = atoi(optarg); break;
+		case 'j': json_output = 1; break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
@@ -973,10 +975,12 @@ int run_lock(int argc, char **argv)
 		                  lock_stackmap_fd, ncpu, interval_ns);
 
 		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-			print_json_report(procs, count, hot_locks, hot_count,
-					  stacks, stack_count, total_stacks,
-					  lock_stackmap_fd, interval_ns);
-			json_to_markdown("report/lock.json", "report/lock.md");
+			if (json_output) {
+				print_json_report(procs, count, hot_locks, hot_count,
+						  stacks, stack_count, total_stacks,
+						  lock_stackmap_fd, interval_ns);
+				json_to_markdown("report/lock.json", "report/lock.md");
+			}
 		}
 
 		free(procs);

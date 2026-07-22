@@ -1099,47 +1099,60 @@ static void usage(const char *prog)
     "选项:\n"
     "  -i, --interval <秒>            采样间隔（默认: %d）\n"
     "  -d, --duration <秒>            总运行时长, 0 表示持续运行（默认: 0）\n"
+    "  -o, --output <路径>            输出到文件（默认: 标准输出）\n"
     "  -a, --avail-threshold <百分比> 可用内存低水位阈值（默认: %.0f）\n"
     "  -f, --majfault-threshold <次/s> major fault 速率阈值（默认: %.0f）\n"
+    "  -j, --json                     输出 JSON + Markdown 报告到 report/ 目录\n"
     "  -h, --help                     显示本帮助信息\n"
     "\n"
     "示例:\n"
     "  sudo %s                 # 默认参数运行\n"
     "  sudo %s -i 5 -d 60      # 每 5 秒采样, 运行 60 秒\n"
-    "  sudo %s -a 15 -f 100    # 更敏感的阈值\n",
+    "  sudo %s -a 15 -f 100    # 更敏感的阈值\n"
+    "  sudo %s -j -d 30        # 输出 JSON 诊断报告\n",
     prog, g_cfg.mem_interval, g_cfg.mem_avail_pct, g_cfg.mem_majfault,
-    prog, prog, prog);
+    prog, prog, prog, prog);
 }
 
 int run_mem(int argc, char **argv)
 {
   int interval = g_cfg.mem_interval;
   int duration = 0;
+  int json_output = 0;
   double avail_pct_lo = g_cfg.mem_avail_pct;
   double majfault_hi  = g_cfg.mem_majfault;
+  const char *output_file = NULL;
 
   static struct option long_opts[] = {
     {"interval",           required_argument, 0, 'i'},
     {"duration",           required_argument, 0, 'd'},
+    {"output",             required_argument, 0, 'o'},
     {"avail-threshold",    required_argument, 0, 'a'},
     {"majfault-threshold", required_argument, 0, 'f'},
+    {"json",               no_argument,       0, 'j'},
     {"help",               no_argument,       0, 'h'},
     {0, 0, 0, 0}
   };
 
   int opt;
-  while ((opt = getopt_long(argc, argv, "i:d:a:f:h", long_opts, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "i:d:o:a:f:jh", long_opts, NULL)) != -1) {
     switch (opt) {
     case 'i': interval = atoi(optarg); break;
     case 'd': duration = atoi(optarg); break;
+    case 'o': output_file = optarg; break;
     case 'a': avail_pct_lo = atof(optarg); break;
     case 'f': majfault_hi = atof(optarg); break;
+    case 'j': json_output = 1; break;
     case 'h': usage(argv[0]); return 0;
     default:  usage(argv[0]); return 1;
     }
   }
 
   if (check_interval(interval) != 0)
+    return 1;
+
+  FILE *out = open_output(output_file);
+  if (!out)
     return 1;
 
   signal(SIGINT, on_signal);
@@ -1223,18 +1236,20 @@ int run_mem(int argc, char **argv)
       tot_reclaim_cnt += rows[i].st.direct_reclaim_cnt;
     }
 
-    print_overview(stdout, &m, &sys_delta, &rates, &au,
+    print_overview(out, &m, &sys_delta, &rates, &au,
                    tot_reclaim_ns, tot_reclaim_cnt, (double)interval);
-    print_top_procs(stdout, rows, nrow, (double)interval);
-    print_diagnosis(stdout, &m, &sys_delta, &rates, &au, rows, nrow,
+    print_top_procs(out, rows, nrow, (double)interval);
+    print_diagnosis(out, &m, &sys_delta, &rates, &au, rows, nrow,
                     tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
                     avail_pct_lo, majfault_hi);
 
 	if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-		print_mem_json_report(&m, &sys_delta, &rates, &au, rows, nrow,
-				  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
-				  avail_pct_lo, majfault_hi);
-		json_to_markdown("report/mem.json", "report/mem.md");
+		if (json_output) {
+			print_mem_json_report(&m, &sys_delta, &rates, &au, rows, nrow,
+					  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
+					  avail_pct_lo, majfault_hi);
+			json_to_markdown("report/mem.json", "report/mem.md");
+		}
 		break;
 	}
   }
@@ -1242,5 +1257,6 @@ int run_mem(int argc, char **argv)
   fprintf(stderr, "[*] 正在退出...\n");
   detach_all();
   mem_anomaly_bpf__destroy(skel);
+  if (output_file) fclose(out);
   return 0;
 }

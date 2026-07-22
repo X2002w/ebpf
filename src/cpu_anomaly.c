@@ -999,9 +999,8 @@ static void usage(const char *prog)
 		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
 		"  -s, --schedstats         尝试开启内核调度器详细统计 (sched_schedstats)\n"
 		"  --cpu-threshold <%%>      CPU 占用异常阈值，百分比（默认: %.0f）\n"
+		"  -j, --json               输出 JSON + Markdown 报告到 report/ 目录\n"
 		"  -h, --help               显示本帮助信息\n"
-		"\n"
-		"报告默认输出到 report/cpu.json 和 report/cpu.md。\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                                # 默认参数运行\n"
@@ -1019,6 +1018,7 @@ int run_cpu(int argc, char **argv)
 	int   interval       = g_cfg.interval;
 	int   duration       = 0;
 	int   profile_hz     = g_cfg.cpu_profile_hz;
+	int   json_output    = 0;
 	double cpu_threshold = g_cfg.cpu_threshold;
 	const char *output_file = NULL;
 
@@ -1029,19 +1029,21 @@ int run_cpu(int argc, char **argv)
 		{"profile",       required_argument, 0, 'p'},
 		{"cpu-threshold", required_argument, 0, 'c'},
 		{"schedstats",    no_argument,       0, 's'},
+		{"json",          no_argument,       0, 'j'},
 		{"help",          no_argument,       0, 'h'},
 		{0, 0, 0, 0}
 	};
 
 	int opt;
 	int enable_schedstats = 0;
-	while ((opt = getopt_long(argc, argv, "i:d:o:p:sh", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:p:sjh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
 		case 'p': profile_hz = atoi(optarg); break;
 		case 's': enable_schedstats = 1; break;
+		case 'j': json_output = 1; break;
 		case 'c': cpu_threshold = atof(optarg); break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
@@ -1198,12 +1200,14 @@ int run_cpu(int argc, char **argv)
 		             sched_name, preempt_model, schedstats_on);
 
 
-	print_json_report(procs, count, interval_ns,
+	if (json_output) {
+		print_json_report(procs, count, interval_ns,
 			  ncpu, cpu_threshold,
 			  stacks, stack_count, total_stack_samples,
 			  schedstats_on, sched_name, preempt_model,
 			  stackmap_fd);
-	json_to_markdown("report/cpu.json", "report/cpu.md");
+		json_to_markdown("report/cpu.json", "report/cpu.md");
+	}
 
 		free(procs);
 		free(stacks);
