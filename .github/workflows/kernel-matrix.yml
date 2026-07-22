@@ -82,7 +82,7 @@ jobs:
             stress-ng --cpu 2 &
             SPID=$!
             sleep 1
-            ./eebpf hot -i 2 -d 4
+            ./eebpf hot -i 2 -d 4 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
@@ -90,7 +90,7 @@ jobs:
             stress-ng --cpu 2 &
             SPID=$!
             sleep 1
-            ./eebpf cpu -i 2 -d 4 -p 0
+            ./eebpf cpu -i 2 -d 4 -p 0 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
@@ -98,7 +98,7 @@ jobs:
             stress-ng --vm 2 --vm-bytes 128M &
             SPID=$!
             sleep 1
-            ./eebpf mem -i 2 -d 4
+            ./eebpf mem -i 2 -d 4 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
@@ -106,7 +106,7 @@ jobs:
             stress-ng --hdd 2 --hdd-bytes 32M &
             SPID=$!
             sleep 1
-            ./eebpf io -i 2 -d 4
+            ./eebpf io -i 2 -d 4 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
@@ -114,7 +114,7 @@ jobs:
             stress-ng --futex 2 &
             SPID=$!
             sleep 1
-            ./eebpf lock -i 2 -d 4 -p 0
+            ./eebpf lock -i 2 -d 4 -p 0 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
