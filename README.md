@@ -74,7 +74,6 @@ JSON 格式详见 [docs/json-schema.md](docs/json-schema.md)。
 | [docs/manual.md](docs/manual.md) | 用户手册：安装、构建、配置、各模块使用指南 |
 | [docs/test-guide.md](docs/test-guide.md) | 测试说明：一键部署、场景复现、性能基准、JSON 校验 |
 | [docs/json-schema.md](docs/json-schema.md) | JSON 输出格式规范：顶层结构、section 类型、diagnosis 字段定义 |
-| [docs/io_anomaly.md](docs/io_anomaly.md) | I/O 异常检测设计文档：BPF 挂载点、采集指标、延迟分位计算 |
 | [docs/collected_data.md](docs/collected_data.md) | 各模块 BPF 采集数据字典：map key/value、字段类型与来源 |
 | [docs/compat-matrix.md](docs/compat-matrix.md) | 多平台适配矩阵：x86_64/ARM64 × 内核 6.1/6.6/6.12 |
 
