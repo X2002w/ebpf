@@ -296,7 +296,7 @@ static void print_report(FILE *out,
 		else if (rate > g_cfg.hot_freq_per_sec)
 			type = "高频调用";
 		else if (avg_us > g_cfg.hot_lat_us)
-			type = "高耗时";
+			type = is_wait_syscall(entries[i].nr) ? "等待 (正常)" : "高耗时";
 		else
 			type = "高错误率";
 		fprintf(out, "  —  %s\n", type);
@@ -514,6 +514,8 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			const char *root_cause = NULL;
 			const char *suggestion = NULL;
 
+			int is_anomaly = 1;
+
 			if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us) {
 				type = "高频 + 高耗时";
 				root_cause = "系统调用频繁调用且耗时偏高";
@@ -523,9 +525,10 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 				root_cause = "事件循环或 busy-poll 导致短耗时系统调用高频重复";
 				suggestion = "检查轮询逻辑，改用阻塞+超时或事件驱动模式";
 			} else if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(entries[i].nr)) {
-				type = "高耗时 (事件等待)";
+				type = "等待 (正常)";
 				root_cause = "事件等待型系统调用，高耗时说明无事件到达或超时设置较长";
 				suggestion = "属正常等待行为；若期望快速响应，检查 fd 活跃度和超时参数";
+				is_anomaly = 0;
 			} else if (avg_us > g_cfg.hot_lat_us) {
 				type = "高耗时";
 				root_cause = "系统调用阻塞等待 I/O、锁或网络资源";
@@ -543,7 +546,7 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			char tbuf[128];
 			snprintf(tbuf, sizeof(tbuf), "%s (syscall)", syscall_name(entries[i].nr));
 			json_kv_str(out, 5, "target", tbuf, 0);
-			json_kv_bool(out, 5, "is_anomaly", 1, 0);
+			json_kv_bool(out, 5, "is_anomaly", is_anomaly, 0);
 			json_kv_str(out, 5, "subtype", type, 0);
 			json_kv_str(out, 5, "root_cause", root_cause, 0);
 			json_kv_str(out, 5, "suggestion", suggestion, 0);
@@ -597,17 +600,22 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
 				continue;
 
-			const char *ptype = avg_us > g_cfg.hot_lat_us ? "高耗时" : "高频调用";
+			const char *ptype = NULL;
 			const char *proot_cause = NULL;
 			const char *psuggestion = NULL;
+			int pis_anomaly = 1;
 
 			if (avg_us > g_cfg.hot_lat_us && is_wait_syscall(p->top_lat_nr)) {
+				ptype = "等待 (正常)";
 				proot_cause = "线程主要时间在事件等待，属正常 I/O 多路复用行为";
 				psuggestion = "无明显异常；若需降低时延，检查 fd 活跃度或调小超时";
+				pis_anomaly = 0;
 			} else if (avg_us > g_cfg.hot_lat_us) {
+				ptype = "高耗时";
 				proot_cause = "线程大量时间消耗在阻塞型系统调用";
 				psuggestion = "分析调用路径，考虑异步化或减少阻塞时间";
 			} else {
+				ptype = "高频调用";
 				proot_cause = "线程频繁调用短耗时系统调用，可能存在轮询模式";
 				psuggestion = "审查调用频率，调整轮询间隔或切换事件驱动";
 			}
@@ -623,7 +631,7 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			char tbuf[128];
 			snprintf(tbuf, sizeof(tbuf), "%s (TID %u)", p->comm, p->tid);
 			json_kv_str(out, 5, "target", tbuf, 0);
-			json_kv_bool(out, 5, "is_anomaly", 1, 0);
+			json_kv_bool(out, 5, "is_anomaly", pis_anomaly, 0);
 			json_kv_str(out, 5, "subtype", ptype, 0);
 			json_kv_str(out, 5, "root_cause", proot_cause, 0);
 			json_kv_str(out, 5, "suggestion", psuggestion, 0);
