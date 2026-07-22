@@ -105,6 +105,16 @@ echo "sk-your-key" > ai_analysis/api.txt(本地测试)
 
 API 兼容 OpenAI 接口的任意后端（DeepSeek、通义千问等），编辑 `ai_analysis/api_config.json` 切换。
 
+### 自定义系统提示词
+
+编辑 `ai_analysis/system_prompt.md` 即可自定义发送给大模型的系统提示词，无需修改代码。`caller.py` 启动时自动加载该文件内容作为 system prompt，若文件不存在则使用内置简化版。
+
+可自定义的内容示例：
+- 调整报告输出语言和风格
+- 追加特定分析维度（如网络、GPU）
+- 修改根因推断的侧重点或优先级
+- 添加领域特定的诊断经验规则
+
 ## 构建要求
 
 - clang (19+)、bpftool、make
