@@ -1,0 +1,12 @@
+Package: eebpf
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: @ARCH@
+Depends: libbpf1, libelf1t64 | libelf1, zlib1g, python3-openai
+Maintainer: Li Yan <15008695828@163.com>
+Description: eBPF-based system anomaly observation and root cause analysis tool
+ eebpf is a lightweight system observability tool based on eBPF (libbpf + CO-RE).
+ It covers 5 anomaly scenarios: CPU, I/O, memory, lock contention, and syscall hotspots.
+ Outputs structured Markdown diagnosis reports and JSON data.
+ Requires Linux kernel 6.6+ with CONFIG_DEBUG_INFO_BTF.
