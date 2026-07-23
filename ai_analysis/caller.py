@@ -418,8 +418,9 @@ def main():
 	parser = argparse.ArgumentParser(
 		description="eBPF 多模块联合 AI 诊断分析")
 	parser.add_argument(
-		"report_dir", nargs="?", default="report",
-		help="report 目录路径 (默认: report/)")
+		"report_dir", nargs="?",
+		default=None,
+		help="report 目录路径 (默认: 自动查找)")
 	parser.add_argument(
 		"-o", "--output", default="ai_report/ai_diagnosis.md",
 		help="输出报告文件路径 (默认: ai_report/ai_diagnosis.md)")
@@ -434,11 +435,21 @@ def main():
 		help="仅打印构建的 prompt，不调用 API")
 	args = parser.parse_args()
 
+	# 自动查找 report 目录: 优先参数指定 > 当前目录 report/ > 项目根目录 report/
+	if args.report_dir:
+		report_dir = args.report_dir
+	elif Path("report").is_dir():
+		report_dir = "report"
+	else:
+		project_root = Path(__file__).parent.parent
+		report_dir = str(project_root / "report")
+		print(f"[*] 自动检测到 report 目录: {report_dir}", file=sys.stderr)
+
 	# 解析模块列表
 	wanted = [m.strip() for m in args.modules.split(",") if m.strip()]
-	reports = load_reports(args.report_dir, wanted)
+	reports = load_reports(report_dir, wanted)
 	if not reports:
-		sys.exit(f"在 {args.report_dir}/ 下未找到指定模块的 JSON 文件: {args.modules}")
+		sys.exit(f"在 {report_dir}/ 下未找到指定模块的 JSON 文件: {args.modules}")
 
 	loaded_mods = [m for m in wanted if m in reports]
 	skipped = [m for m in wanted if m not in reports]
