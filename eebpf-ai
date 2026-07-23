@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python3 /usr/share/eebpf/ai_analysis/caller.py "$@"
