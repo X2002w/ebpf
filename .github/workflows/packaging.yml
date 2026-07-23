@@ -25,23 +25,30 @@ concurrency:
 jobs:
   deb-amd64:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/x2002w/eebpf-build:latest
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-      volumes:
-        - /sys/kernel/btf:/sys/kernel/btf:ro
     steps:
       - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
 
       - name: Build
         run: make -j$(nproc)
 
       - name: 打包 deb
-        run: |
-          apt-get update && apt-get install -y --no-install-recommends dpkg-dev
-          make deb
+        run: make deb
 
       - name: 验证 deb 结构
         run: |
@@ -50,7 +57,7 @@ jobs:
 
       - name: 安装 deb 并冒烟测试
         run: |
-          apt-get install -y --no-install-recommends ./eebpf_*.deb
+          sudo apt-get install -y --no-install-recommends ./eebpf_*.deb
           eebpf --version
           eebpf-ai --help
           # 全模块可启动验证
