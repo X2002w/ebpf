@@ -121,13 +121,15 @@ uninstall:
 # deb 目标 — 构建 .deb 安装包
 DEB_STAGING := $(BUILD_DIR)/deb-staging
 DEB_ARCH    := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
-DEB_NAME    := eebpf_1.0.0_$(DEB_ARCH).deb
+DEB_VERSION := $(or $(VERSION),$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'),1.0.0)
+DEB_NAME    := eebpf_$(DEB_VERSION)_$(DEB_ARCH).deb
 
 .PHONY: deb
 deb: $(APP)
 	rm -rf $(DEB_STAGING)
 	$(MAKE) install-bin install-conf install-ai DESTDIR=$(DEB_STAGING) PREFIX=/usr
-	sed -i 's/^Architecture: .*/Architecture: $(DEB_ARCH)/' packaging/DEBIAN/control
-	cp -r packaging/DEBIAN $(DEB_STAGING)/
+	install -d $(DEB_STAGING)/DEBIAN
+	sed -e 's/@VERSION@/$(DEB_VERSION)/' -e 's/@ARCH@/$(DEB_ARCH)/' \
+		packaging/DEBIAN/control.in > $(DEB_STAGING)/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(DEB_STAGING) $(DEB_NAME)
 	@echo "  => $(DEB_NAME)"
