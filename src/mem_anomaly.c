@@ -582,7 +582,7 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
   int flag_fault   = r->pgfault_ps > g_cfg.mem_fault_ps;
 
   int triggers = flag_lowmem + flag_major + flag_swap + flag_refault +
-                 flag_direct + flag_oom + flag_retry;
+                 flag_direct + flag_oom + flag_retry + flag_fault;
 
   fprintf(out,
     "----------------------------------------------------------------------\n"
@@ -621,20 +621,26 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     root_cause = "缺页速率与重试率双高, handle_mm_fault 大量返回 RETRY — "
                  "进程频繁触碰刚映射/刚换出的页, MM 锁竞争或 I/O 缺页密集";
   } else if (flag_retry) {
-    anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
+    anomaly_type = "内存: 缺页重试偏高 (注意)";
     root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, "
                  "暂未形成抖动，持续监控";
   } else if (flag_refault) {
-    anomaly_type = "注意: refault 偏高 (未构成异常)";
+    anomaly_type = "内存: refault 偏高 (注意)";
     root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — "
                  "暂未伴随内存压力或高缺页, 持续监控";
   } else if (flag_major) {
-    anomaly_type = "注意: major fault 偏高 (未构成异常)";
+    anomaly_type = "内存: major fault 偏高 (注意)";
     root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, "
                  "可能为正常共享库加载, 持续监控";
+  } else if (flag_lowmem && flag_fault) {
+    anomaly_type = "内存高占用 (缺页频繁)";
+    root_cause = "可用内存偏低且缺页速率高 — 进程内存分配活跃, 需关注增长趋势";
   } else if (flag_lowmem) {
     anomaly_type = "内存高占用";
     root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
+  } else if (flag_fault) {
+    anomaly_type = "内存压力 (高缺页)";
+    root_cause = "缺页速率偏高, 暂未伴随可用内存不足 — 内存分配频繁, 持续监控";
   } else {
     anomaly_type = "内存异常波动";
     root_cause = "多因素综合, 建议结合 dmesg / OOM 日志进一步排查";
@@ -902,7 +908,7 @@ static void print_mem_json_report(const struct meminfo *m,
 		int flag_fault   = r->pgfault_ps > g_cfg.mem_fault_ps;
 
 		int triggers = flag_lowmem + flag_major + flag_swap + flag_refault +
-		               flag_direct + flag_oom + flag_retry;
+		               flag_direct + flag_oom + flag_retry + flag_fault;
 
 		json_obj_begin_nokey(out, 2);
 		json_kv_str(out, 3, "type", "diagnosis", 0);
@@ -958,20 +964,26 @@ static void print_mem_json_report(const struct meminfo *m,
 				anomaly_type = "内存抖动 (缺页颠簸)";
 				root_cause = "缺页速率与重试率双高, handle_mm_fault 大量返回 RETRY — 进程频繁触碰刚映射/刚换出的页, MM 锁竞争或 I/O 缺页密集";
 			} else if (flag_retry) {
-				anomaly_type = "注意: 缺页重试偏高 (未构成异常)";
+				anomaly_type = "内存: 缺页重试偏高 (注意)";
 				root_cause = "缺页重试率偏高 — 部分缺页在等待磁盘 I/O 或争抢 mmap_lock, 暂未形成抖动，持续监控";
 				is_real_anom = 0;
 			} else if (flag_refault) {
-				anomaly_type = "注意: refault 偏高 (未构成异常)";
+				anomaly_type = "内存: refault 偏高 (注意)";
 				root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — 暂未伴随内存压力或高缺页, 持续监控";
 				is_real_anom = 0;
 			} else if (flag_major) {
-				anomaly_type = "注意: major fault 偏高 (未构成异常)";
+				anomaly_type = "内存: major fault 偏高 (注意)";
 				root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, 可能为正常共享库加载, 持续监控";
 				is_real_anom = 0;
+			} else if (flag_lowmem && flag_fault) {
+				anomaly_type = "内存高占用 (缺页频繁)";
+				root_cause = "可用内存偏低且缺页速率高 — 进程内存分配活跃, 需关注增长趋势";
 			} else if (flag_lowmem) {
 				anomaly_type = "内存高占用";
 				root_cause = "可用内存持续偏低, 尚未出现明显回收抖动 — 需关注增长趋势";
+			} else if (flag_fault) {
+				anomaly_type = "内存压力 (高缺页)";
+				root_cause = "缺页速率偏高, 暂未伴随可用内存不足 — 内存分配频繁, 持续监控";
 			} else {
 				anomaly_type = "内存异常波动";
 				root_cause = "多因素综合, 建议结合 dmesg / OOM 日志进一步排查";

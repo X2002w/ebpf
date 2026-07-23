@@ -35,7 +35,7 @@ sudo ./scripts/reproduce.sh
 |------|------|----------|-----------|---------------|
 | 1 | CPU 密集 | stress-ng --cpu 4 matrixprod | cpu | CPU 密集 |
 | 2 | I/O 抖动 | fio randrw iodepth=64 direct=1 | io | I/O |
-| 3 | 内存压力 | stress-ng --vm 4 256M --vm-keep | mem | 内存 |
+| 3 | 内存压力 | stress-ng --vm 4 80% --vm-keep | mem | 内存 |
 | 4 | 锁竞争 | stress-ng --mutex 8 | lock | 锁竞争 |
 
 ### 3.2 输出文件
@@ -89,7 +89,7 @@ sudo ./eebpf io -d 30
 
 ```bash
 # 终端 1: 注入内存压力
-stress-ng --vm 4 --vm-bytes 256M --vm-keep --timeout 60s
+stress-ng --vm 4 --vm-bytes 80% --vm-keep --timeout 60s
 
 # 终端 2: 运行 eebpf
 sudo ./eebpf mem -d 30

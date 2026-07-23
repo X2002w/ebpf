@@ -254,7 +254,7 @@
 
 | 常量 | 值 | 说明 |
 |---|---|---|
-| `DEF_AVAIL_PCT_LO` | 10.0% | 可用内存低水位 |
+| `DEF_AVAIL_PCT_LO` | 20.0% | 可用内存低水位 |
 | `DEF_MAJFAULT_HI` | 200.0/s | 主页面错误阈值 |
 | `DEF_REFAULT_HI` | 1000.0/s | 工作集重故障阈值 |
 | `DEF_SWAPIN_HI` | 500.0/s | 换入/换出阈值 |

@@ -167,3 +167,4 @@ GitHub Actions 覆盖三类自动化验证（详见 [docs/compat-matrix.md](docs
 - [x] 添加各文档之间的相互引用
 - [ ] 修正report报告路径默认为项目根目录下report目录
 - [ ] 当前项目无并发,考虑将py调用大模型更换为curl调用
+- [ ] 分离打包，deb内添加说明

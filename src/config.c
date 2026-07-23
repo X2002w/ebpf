@@ -15,7 +15,7 @@ static void set_defaults(void)
 	g_cfg.cpu_profile_hz     = 99;
 	g_cfg.io_interval        = 3;
 	g_cfg.mem_interval       = 3;
-	g_cfg.mem_avail_pct      = 10.0;
+	g_cfg.mem_avail_pct      = 20.0;
 	g_cfg.mem_majfault       = 200.0;
 	g_cfg.mem_refault        = 1000.0;
 	g_cfg.mem_swapin         = 500.0;

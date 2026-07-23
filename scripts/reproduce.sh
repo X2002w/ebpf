@@ -63,6 +63,7 @@ run_scenario() {
 	local stress_cmd="$3"    # 注入命令
 	local expected="$4"      # 期望根因关键词
 	local setup_fn="$5"      # 前置准备（可选）
+	local extra_args="$6"    # eebpf 额外参数（可选）
 
 	echo ""
 	bold "============================================================"
@@ -88,7 +89,7 @@ run_scenario() {
 	local json_file="$OUT_DIR/${module}_demo.json"
 	local md_file="$OUT_DIR/${module}_demo.md"
 
-	"$EEBPF" "$module" -j -d "$EEBPF_DUR" >/dev/null 2>&1
+	"$EEBPF" "$module" -j -d "$EEBPF_DUR" $extra_args >/dev/null 2>&1
 
 	# 停止注入
 	dim "  停止注入负载..."
@@ -207,8 +208,8 @@ run_scenario "I/O 随机读写抖动" "io" \
 echo ""
 echo "[4/5] 内存异常 — stress-ng 内存压力"
 run_scenario "内存压力与抖动" "mem" \
-	"stress-ng --vm 4 --vm-bytes 256M --vm-keep --timeout ${MEM_DUR}s --metrics-brief" \
-	"内存"
+	"stress-ng --vm 4 --vm-bytes 80% --vm-keep --timeout ${MEM_DUR}s --metrics-brief" \
+	"内存" "" "-a 30"
 
 # ================================================================
 echo ""
@@ -227,7 +228,7 @@ cat >> "$SUMMARY" << EOF
 |------|----------|----------|----------|
 | CPU | stress-ng --cpu 4 matrixprod | CPU 密集型计算 | 见上方验证表 |
 | I/O | fio randrw iodepth=64 | I/O 延迟抖动/队列拥堵 | 见上方验证表 |
-| 内存 | stress-ng --vm 4 80% | 内存抖动/回收压力 | 见上方验证表 |
+| 内存 | stress-ng --vm 4 --vm-bytes 80% | 内存抖动/回收压力 | 见上方验证表 |
 | 锁 | stress-ng --mutex 8 | 锁竞争/futex 等待 | 见上方验证表 |
 
 ## 输出文件

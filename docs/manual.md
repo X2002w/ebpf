@@ -109,7 +109,7 @@ eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令
 | `cpu_profile_hz` | int | 99 | CPU perf 栈采样频率（Hz） |
 | `io_interval` | int | 3 | I/O 模块采样间隔（秒） |
 | `mem_interval` | int | 3 | 内存模块采样间隔（秒） |
-| `mem_avail_pct` | double | 10 | 可用内存低水位阈值（%） |
+| `mem_avail_pct` | double | 20 | 可用内存低水位阈值（%） |
 | `mem_majfault` | double | 200 | major fault 速率异常阈值（次/s） |
 | `mem_refault` | double | 1000 | 缓存未命中异常阈值（次/s） |
 | `mem_swapin` | double | 500 | swap 换入异常阈值（次/s） |
@@ -224,7 +224,7 @@ sudo ./eebpf lock -d 180
 | `-i, --interval <秒>` | 3 | 采样间隔 |
 | `-d, --duration <秒>` | 0 | 总运行时长，0 表示持续运行 |
 | `-o, --output <路径>` | stdout | 纯文本报告输出到文件 |
-| `-a, --avail-threshold <百分比>` | 10 | 可用内存低水位阈值，低于视为异常 |
+| `-a, --avail-threshold <百分比>` | 20 | 可用内存低水位阈值，低于视为异常 |
 | `-f, --majfault-threshold <次/s>` | 200 | major fault 速率异常阈值 |
 | `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
 | `-h, --help` | - | 显示帮助信息 |
