@@ -64,4 +64,37 @@ $(APP): $(USER_OBJS)
 	$(CLANG) $(CFLAGS_USER) $^ $(LDLIBS) -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(APP) 
+	rm -rf $(BUILD_DIR) $(APP)
+
+# install 目标 — 安装二进制、配置、AI 诊断脚本
+PREFIX    ?= /usr/local
+BINDIR    ?= $(DESTDIR)$(PREFIX)/bin
+SYSCONFDIR ?= $(DESTDIR)/etc
+DATADIR   ?= $(DESTDIR)$(PREFIX)/share/eebpf
+
+.PHONY: install install-bin install-conf install-ai
+install: install-bin install-conf install-ai
+
+install-bin: $(APP)
+	install -d $(BINDIR)
+	install -m 755 $(APP) $(BINDIR)/$(APP)
+
+install-conf:
+	install -d $(SYSCONFDIR)
+	if [ ! -f $(SYSCONFDIR)/eebpf.conf ]; then \
+		install -m 644 eebpf.conf $(SYSCONFDIR)/eebpf.conf; \
+	fi
+
+install-ai:
+	install -d $(DATADIR)/ai_analysis
+	install -m 644 ai_analysis/caller.py $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/sys_message.py $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/api_config.json $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/system_prompt.md $(DATADIR)/ai_analysis/
+	install -m 644 requirements.txt $(DATADIR)/ai_analysis/requirements.txt
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(BINDIR)/$(APP)
+	rm -f $(SYSCONFDIR)/eebpf.conf
+	rm -rf $(DATADIR)
