@@ -74,10 +74,16 @@ DATADIR   ?= $(DESTDIR)$(PREFIX)/share/eebpf
 
 .PHONY: install install-bin install-conf install-ai
 install: install-bin install-conf install-ai
+	@if [ -n "$$SUDO_USER" ]; then \
+		su "$$SUDO_USER" -c '$(MAKE) install-user'; \
+	else \
+		$(MAKE) install-user; \
+	fi
 
 install-bin: $(APP)
 	install -d $(BINDIR)
 	install -m 755 $(APP) $(BINDIR)/$(APP)
+	install -m 755 eebpf-ai $(BINDIR)/eebpf-ai
 
 install-conf:
 	install -d $(SYSCONFDIR)
@@ -93,8 +99,35 @@ install-ai:
 	install -m 644 ai_analysis/system_prompt.md $(DATADIR)/ai_analysis/
 	install -m 644 requirements.txt $(DATADIR)/ai_analysis/requirements.txt
 
+# install-user 将可编辑的配置文件安装到用户家目录 (无需 root)
+USER_EEBPF := $(HOME)/.eebpf
+
+.PHONY: install-user
+install-user:
+	install -d $(USER_EEBPF)
+	if [ ! -f $(USER_EEBPF)/eebpf.conf ]; then \
+		install -m 644 eebpf.conf $(USER_EEBPF)/eebpf.conf; \
+	fi
+	install -d $(USER_EEBPF)/ai_analysis
+	install -m 644 ai_analysis/api_config.json $(USER_EEBPF)/ai_analysis/
+	install -m 644 ai_analysis/system_prompt.md $(USER_EEBPF)/ai_analysis/
+
 .PHONY: uninstall
 uninstall:
-	rm -f $(BINDIR)/$(APP)
+	rm -f $(BINDIR)/$(APP) $(BINDIR)/eebpf-ai
 	rm -f $(SYSCONFDIR)/eebpf.conf
 	rm -rf $(DATADIR)
+
+# deb 目标 — 构建 .deb 安装包
+DEB_STAGING := $(BUILD_DIR)/deb-staging
+DEB_ARCH    := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+DEB_NAME    := eebpf_1.0.0_$(DEB_ARCH).deb
+
+.PHONY: deb
+deb: $(APP)
+	rm -rf $(DEB_STAGING)
+	$(MAKE) install-bin install-conf install-ai DESTDIR=$(DEB_STAGING) PREFIX=/usr
+	sed -i 's/^Architecture: .*/Architecture: $(DEB_ARCH)/' packaging/DEBIAN/control
+	cp -r packaging/DEBIAN $(DEB_STAGING)/
+	dpkg-deb --root-owner-group --build $(DEB_STAGING) $(DEB_NAME)
+	@echo "  => $(DEB_NAME)"
