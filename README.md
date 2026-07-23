@@ -10,25 +10,37 @@
 
 ## 快速开始
 
+### 方式一：Deb 包安装
+
+从 [Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的 `.deb` 包：
+
 ```bash
-# 克隆仓库
-git clone https://github.com/X2002w/ebpf.git && cd ebpf
+# 安装
+sudo apt install ./eebpf_*_amd64.deb
 
-# 环境检查 + 依赖安装
-./start.sh
-
-# 构建
-make
+# 配置 API key (AI 诊断功能)
+echo "sk-your-key" > ~/.eebpf/api.txt
 
 # 运行（需要 root）
-sudo ./eebpf cpu -d 10        # CPU 异常检测, 运行 10 秒
-sudo ./eebpf io  -d 10        # I/O 异常检测
-sudo ./eebpf mem -d 10        # 内存异常检测
-sudo ./eebpf lock -d 10       # 锁竞争检测
-sudo ./eebpf hot -d 10        # 系统调用热点
+sudo eebpf cpu -d 10
+sudo eebpf-ai report/ -m cpu,mem
+```
 
-# 输出 JSON 报告
-sudo ./eebpf cpu -j -d 30     # report/cpu.json + report/cpu.md
+卸载：`sudo apt remove eebpf`
+
+### 方式二：源码构建
+
+```bash
+git clone https://github.com/X2002w/ebpf.git && cd ebpf
+./start.sh                           # 环境检查 + 依赖安装
+make                                 # 构建
+sudo ./eebpf cpu -d 10               # 运行
+```
+
+### 方式三：一键部署
+
+```bash
+sudo ./scripts/setup.sh              # 依赖检查 → 构建 → 场景复现
 ```
 
 ### 通用 CLI 参数
@@ -134,11 +146,15 @@ make clean && make
 
 ## CI/CD
 
-GitHub Actions 覆盖三类自动化验证（详见 [docs/compat-matrix.md](docs/compat-matrix.md)）:
+GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md](docs/compat-matrix.md)）:
 
-- **Project Build**: openKylin 2.0 容器内完整构建
-- **Kernel Matrix**: virtme-ng 启动 6.1 / 6.6 / 6.12 内核，真实挂载 BPF 程序冒烟测试
-- **ARM64**: ARM64 原生构建 + 5 个子命令真实加载 BPF 冒烟
+| 工作流 | 触发条件 | 说明 |
+|------|------|------|
+| **Build Test** | push / PR | openKylin 容器内快速编译验证 |
+| **ARM64 Build** | push / PR | ARM64 原生构建 + 全模块冒烟测试 |
+| **Kernel Matrix** | push / PR | virtme-ng 启动 6.1 / 6.6 / 6.12 内核真实加载 BPF |
+| **Packaging Test** | push / PR | 打包 deb → apt 安装 → 冒烟测试 (amd64 + arm64) |
+| **Release** | tag `v*` | 构建 → 安装验证 → GitHub Release 自动发布 |
 
 ## TODO
 
@@ -154,7 +170,7 @@ GitHub Actions 覆盖三类自动化验证（详见 [docs/compat-matrix.md](docs
 - [x] 考虑去除ii_qdepth
 - [x] ai诊断时, 添加原始系统设备数据, 为BPF 得到的基础数据做参考
 - [x] io 缓存失效 检测同块短时间内重复读，即缓存失效(cache 空间被占满)
-- [ ] io缓存失效 <- 内存抖动佐证 (多维关联分析)
+- [x] io缓存失效 <- 内存抖动佐证 (多维关联分析)
 - [x] 重构项目
 - [x] cicd自动构建发布镜像
 - [x] 将下载LLVM从build test action移到dockr build action 中
@@ -163,8 +179,8 @@ GitHub Actions 覆盖三类自动化验证（详见 [docs/compat-matrix.md](docs
 - [x] 加前瞻性6.1, 6.6, 6.12, stable —— stable 标签自动追新内核，将来内核更新破坏兼容性时 CI 会第一时间红
 - [x] 重构文档输出报告
 - [x] AI 多模块联合诊断 (ai_analysis/)
-- [ ] 打包发布（make install + pyproject.toml）
+- [x] 打包发布（make install + pyproject.toml）
 - [x] 添加各文档之间的相互引用
-- [ ] 修正report报告路径默认为项目根目录下report目录
+- [x] 修正report报告路径默认为项目根目录下report目录
 - [ ] 当前项目无并发,考虑将py调用大模型更换为curl调用
-- [ ] 分离打包，deb内添加说明
+- [x] 分离打包，deb内添加说明

@@ -48,7 +48,36 @@ make          # 生成 ./eebpf
 
 若报错 `Kernel BTF not found`，说明内核未开启 BTF，无法使用 CO-RE，需更换内核或发行版。
 
-### 1.5 容器化构建（openKylin 环境）
+### 1.5 Deb 包安装
+
+从 [GitHub Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的 `.deb` 包：
+
+```bash
+# 安装
+sudo apt install ./eebpf_*_amd64.deb
+
+# 验证
+eebpf --version
+sudo eebpf cpu -d 10
+```
+
+安装的文件布局：
+
+| 路径 | 说明 |
+|------|------|
+| `/usr/bin/eebpf` | 主程序 |
+| `/usr/bin/eebpf-ai` | AI 诊断入口 |
+| `/etc/eebpf.conf` | 系统级配置文件 |
+| `/usr/share/eebpf/ai_analysis/` | AI 诊断脚本与 prompt |
+
+卸载：
+
+```bash
+sudo apt remove eebpf         # 卸载包
+sudo apt purge eebpf          # 卸载并删除配置文件
+```
+
+### 1.6 容器化构建（openKylin 环境）
 
 ```bash
 ./enter-container.sh   # 构建镜像、启动容器并进入 /workspace
@@ -57,7 +86,7 @@ make                   # 容器内构建
 
 容器由 docker-compose 管理，已挂载宿主机必要目录；运行 BPF 程序需要特权容器。CI（GitHub Actions）会自动构建并发布最新构建/测试镜像。
 
-### 1.6 AI 诊断环境
+### 1.7 AI 诊断环境
 
 AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用大模型 API 对 eBPF 采集数据进行跨模块关联分析。
 
