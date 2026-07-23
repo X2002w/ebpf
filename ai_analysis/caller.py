@@ -24,10 +24,10 @@ from sys_message import collect_all, to_text as sys_to_text
 from openai import OpenAI
 
 
-# API 配置（优先环境变量 > api.txt > api_config.json > 默认值）
+# API 配置（优先级: 环境变量 > CWD > ~/.eebpf/ > 安装目录 > 默认值）
 
 def _load_api_config() -> dict:
-	"""加载 API 配置，优先级: 环境变量 > api.txt > api_config.json > 默认值"""
+	"""加载 API 配置，多路径搜索，优先级从低到高"""
 	defaults = {
 		"api_key": "sk-xxxxxxxx",
 		"base_url": "https://api.deepseek.com",
@@ -35,25 +35,36 @@ def _load_api_config() -> dict:
 	}
 	config = defaults.copy()
 
-	# 1. JSON 配置文件（公共模板）
-	try:
-		file = Path(__file__).parent / "api_config.json"
-		if file.is_file():
-			with open(file, encoding="utf-8") as f:
-				cfg = json.load(f)
-			config.update(cfg)
-	except (FileNotFoundError, PermissionError, json.JSONDecodeError):
-		pass
+	# 搜索路径（优先级从低到高）
+	search_dirs = [
+		Path(__file__).parent,                         # 安装目录
+		Path.home() / ".config" / "eebpf",             # XDG
+		Path.home() / ".eebpf",                        # ~/.eebpf/
+		Path.cwd(),                                    # 当前目录
+		Path.cwd() / "ai_analysis",                    # 项目 ai_analysis/
+	]
 
-	# 2. 纯文本 key 文件（本地测试，gitignore 保护）
-	try:
-		key_file = Path(__file__).parent / "api.txt"
-		if key_file.is_file():
-			key = key_file.read_text(encoding="utf-8").strip()
-			if key:
-				config["api_key"] = key
-	except (FileNotFoundError, PermissionError):
-		pass
+	# 1. JSON 配置文件
+	for d in search_dirs:
+		try:
+			file = d / "api_config.json"
+			if file.is_file():
+				with open(file, encoding="utf-8") as f:
+					cfg = json.load(f)
+				config.update(cfg)
+		except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+			pass
+
+	# 2. 纯文本 key 文件
+	for d in search_dirs:
+		try:
+			key_file = d / "api.txt"
+			if key_file.is_file():
+				key = key_file.read_text(encoding="utf-8").strip()
+				if key:
+					config["api_key"] = key
+		except (FileNotFoundError, PermissionError):
+			pass
 
 	# 3. 环境变量覆盖（最高优先级）
 	env_key = os.environ.get("DEEPSEEK_API_KEY")
@@ -76,10 +87,11 @@ MODEL = _api_config["model"]
 # API key 未配置校验
 _PLACEHOLDER_KEYS = {"sk-xxxxxxxx", "your-api-key", "sk-your-key"}
 if API_KEY in _PLACEHOLDER_KEYS or not API_KEY:
-    print("[!] API key 未配置。请设置环境变量 DEEPSEEK_API_KEY 或写入 ai_analysis/api.txt",
-          file=sys.stderr)
-    print("[!] 也可编辑 ai_analysis/api_config.json 配置 base_url 与 model",
-          file=sys.stderr)
+    print("[!] API key 未配置。任选一种方式：", file=sys.stderr)
+    print("    export DEEPSEEK_API_KEY=sk-your-key", file=sys.stderr)
+    print("    echo sk-your-key > api.txt              # 当前目录", file=sys.stderr)
+    print("    echo sk-your-key > ~/.eebpf/api.txt      # 用户目录", file=sys.stderr)
+    print("[!] 也可编辑 api_config.json 切换模型与后端", file=sys.stderr)
 
 # DeepSeek 检测，仅对 DeepSeek 后端启用 thinking 参数
 _IS_DEEPSEEK = "deepseek" in BASE_URL
@@ -87,9 +99,16 @@ _IS_DEEPSEEK = "deepseek" in BASE_URL
 # System Prompt（从外部文件加载，便于独立编辑）
 
 def _load_system_prompt() -> str:
-	prompt_file = Path(__file__).parent / "system_prompt.md"
-	if prompt_file.is_file():
-		return prompt_file.read_text(encoding="utf-8").strip()
+	# 多路径搜索: CWD > ~/.eebpf/ > 安装目录
+	search_dirs = [
+		Path.cwd(),
+		Path.home() / ".eebpf",
+		Path(__file__).parent,
+	]
+	for d in search_dirs:
+		prompt_file = d / "system_prompt.md"
+		if prompt_file.is_file():
+			return prompt_file.read_text(encoding="utf-8").strip()
 	print("[!] system_prompt.md 未找到，使用内置简化版 prompt", file=sys.stderr)
 	return "你是一名资深的 Linux 系统性能分析专家，请根据 eBPF 采集数据生成诊断报告。"
 
