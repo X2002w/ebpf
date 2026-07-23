@@ -184,3 +184,5 @@ GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md
 - [x] 修正report报告路径默认为项目根目录下report目录
 - [ ] 当前项目无并发,考虑将py调用大模型更换为curl调用
 - [x] 分离打包，deb内添加说明
+- [ ] 插件化扩展,子命令注册机制抽象,支持加载自定义检测模块
+- [ ] 考虑AI 诊断支持保证离线环境可复现 or 添加免费限额api key
