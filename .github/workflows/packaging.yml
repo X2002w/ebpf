@@ -1,0 +1,142 @@
+name: Packaging Test
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - src/**
+      - include/**
+      - Makefile
+      - packaging/**
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deb-amd64:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/x2002w/eebpf-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /sys/kernel/btf:/sys/kernel/btf:ro
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 打包 deb
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends dpkg-dev
+          make deb
+
+      - name: 验证 deb 结构
+        run: |
+          ls -lh eebpf_*.deb
+          dpkg --info eebpf_*.deb
+
+      - name: 安装 deb 并冒烟测试
+        run: |
+          apt-get install -y --no-install-recommends ./eebpf_*.deb
+          eebpf --version
+          eebpf-ai --help
+          # 全模块可启动验证
+          eebpf cpu  -i 1 -d 1 -j
+          eebpf mem  -i 1 -d 1 -j
+          eebpf io   -i 1 -d 1 -j
+          eebpf hot  -i 1 -d 1 -j
+          eebpf lock -i 1 -d 1 -p 0 -j
+          echo "DEB INSTALL PASS"
+
+  deb-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 打包 deb
+        run: make deb
+
+      - name: 验证 deb 结构
+        run: |
+          ls -lh eebpf_*.deb
+          dpkg --info eebpf_*.deb
+
+      - name: 安装 deb 并冒烟测试
+        run: |
+          sudo apt-get install -y --no-install-recommends ./eebpf_*.deb
+          eebpf --version
+          eebpf-ai --help
+
+          # hot: 系统调用热点
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf hot -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # cpu: CPU 计算压力
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf cpu -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # mem: 内存分配压力
+          stress-ng --vm 2 --vm-bytes 128M &
+          SPID=$!
+          sleep 1
+          sudo eebpf mem -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # io: I/O 压力
+          stress-ng --hdd 2 --hdd-bytes 32M &
+          SPID=$!
+          sleep 1
+          sudo eebpf io -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # lock: futex 锁竞争
+          stress-ng --futex 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf lock -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          echo "ALL PASS"
