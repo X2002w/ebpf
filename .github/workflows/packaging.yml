@@ -61,11 +61,11 @@ jobs:
           eebpf --version
           eebpf-ai --help
           # 全模块可启动验证
-          eebpf cpu  -i 1 -d 1 -j
-          eebpf mem  -i 1 -d 1 -j
-          eebpf io   -i 1 -d 1 -j
-          eebpf hot  -i 1 -d 1 -j
-          eebpf lock -i 1 -d 1 -p 0 -j
+          sudo eebpf cpu  -i 1 -d 1 -j
+          sudo eebpf mem  -i 1 -d 1 -j
+          sudo eebpf io   -i 1 -d 1 -j
+          sudo eebpf hot  -i 1 -d 1 -j
+          sudo eebpf lock -i 1 -d 1 -p 0 -j
           echo "DEB INSTALL PASS"
 
   deb-arm64:
