@@ -6,13 +6,20 @@ demo/
 *.o
 *.skel.h
 *.swp
+*.swo
 *.json
+*.deb
+tags
 .*/
 !.github/
-ai_test/venv/
-ai_test/api.txt
+ai_analysis/venv/
+ai_analysis/api.txt
+ai_analysis/__pycache__/
 
 
 !README.md
-!ai_test/report.md
-!src/cpu_anomaly/report/*.md
+!requirements.txt
+!ai_analysis/*.md
+!ai_analysis/*.json
+!report/*.md
+!docs/*

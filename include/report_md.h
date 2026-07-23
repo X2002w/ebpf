@@ -1,20 +1,9 @@
 #ifndef REPORT_MD_H
 #define REPORT_MD_H
 
-#include <stdio.h>
+// report_md.h — JSON→Markdown 渲染器
+// 读取统一 JSON 报告，渲染为结构化 Markdown 诊断报告。
 
-// report_md.h — Markdown 诊断报告模块
-struct proc_info;
-struct stack_entry;
-
-void print_markdown_report(const char *path,
-                           struct proc_info *procs, int count,
-                           unsigned long long total_interval_ns,
-                           int ncpu, double cpu_threshold,
-                           struct stack_entry *stacks, int stack_count,
-                           unsigned long long total_stack_samples,
-                           int stackmap_fd,
-                           const char *sched_name, const char *preempt_model,
-                           int schedstats_on);
+int json_to_markdown(const char *json_path, const char *md_path);
 
 #endif

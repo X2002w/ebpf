@@ -14,8 +14,12 @@
 #include "io_anomaly.skel.h"
 #include "hotfile.skel.h"
 #include "../include/io_anomaly.h"
+#include "../include/report_json.h"
+#include "../include/report_md.h"
+#include "../include/utils.h"
+#include "../include/common.h"
+#include "../include/config.h"
 
-#define DEFAULT_INTERVAL 3
 #define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
 #define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
 #define MAX_ACTIVE_DEVS 256
@@ -658,17 +662,17 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       anomaly_type = "I/O 延迟抖动";
       root_cause = "多作业并发争抢 — 请求在调度层排队等待时间显著增加";
     } else if (flag_qd) {
-      anomaly_type = "I/O 吞吐波动";
-      root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压";
+      anomaly_type = "注意: 队列瞬时拥堵 (未构成异常)";
+      root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压, 暂未引起时延升高";
     } else if (flag_cache) {
-      anomaly_type = "I/O 缓存异常";
-      root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐";
+      anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
+      root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
     } else if (flag_lat) {
       anomaly_type = "I/O 延迟抖动";
-      root_cause = "随机读写压力 — 大量小 IO 请求导致设备寻道/寻址开销增大";
+      root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
     } else if (flag_hot) {
-      anomaly_type = "I/O 负载集中";
-      root_cause = "单一文件占主导 — 当前负载主要集中在个别文件，设备性能正常";
+      anomaly_type = "注意: 热点文件集中 (未构成异常)";
+      root_cause = "单一文件占主导 — 当前负载主要集中在个别文件, 暂未引起 I/O 延迟升高";
     } else {
       anomaly_type = "I/O 异常波动";
       root_cause = "多因素综合 — 建议结合系统日志进一步排查";
@@ -715,9 +719,9 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     if (flag_qwait)
       fprintf(out, "    %d. 平均排队等待 %.1f us 显著偏高（阈值 %.0f us），IO 在调度层堆积\n", ev_n++, avg_qwait_us, qwait_hi);
     if (flag_cache)
-      fprintf(out, "    %d. 缓存失效率 %.1f%%，同块数据在 %dms 内被重复读取 %llu 次\n", ev_n++, miss_rate, 500, val.cache_miss_count);
+      fprintf(out, "    %d. 缓存失效率 %.1f%% (阈值 10.0%%)，同块数据在 %dms 内被重复读取 %llu 次\n", ev_n++, miss_rate, 500, val.cache_miss_count);
     if (flag_hot)
-      fprintf(out, "    %d. Top-3 热点文件占全局 IOPS 的 %.1f%%，访问高度集中\n", ev_n++, top3_pct);
+      fprintf(out, "    %d. Top-3 热点文件占全局 IOPS 的 %.1f%% (阈值 70%%)，访问高度集中\n", ev_n++, top3_pct);
     if (!flag_lat && !flag_qd && !flag_qwait && !flag_cache)
       fprintf(out, "    %d. 指标波动幅度较小，建议延长观测窗口确认趋势\n", ev_n++);
 
@@ -745,6 +749,505 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
   fflush(out);
 }
 
+// 统一 JSON 报告
+static void print_io_json_report(int stats_fd, int file_stats_fd,
+				 int block_hist_fd, double interval_s)
+{
+	const char *path = "report/io.json";
+	FILE *out = json_open(path);
+	if (!out) return;
+
+	char ts[32];
+	iso_timestamp(ts, sizeof(ts));
+	struct sys_metrics sys;
+	read_sys_metrics(&sys);
+
+	__u32 active_devs[256];
+	int active_count = get_active_devs(active_devs, 256);
+
+	fprintf(out, "{\n");
+	json_kv_str(out, 1, "module", "io", 0);
+	json_kv_str(out, 1, "timestamp", ts, 0);
+	json_kv_double(out, 1, "duration_s", interval_s, "%.1f", 0);
+
+	char buf[256];
+	json_obj_begin(out, 1, "system");
+	snprintf(buf, sizeof(buf), "%d", active_count);
+	json_kv_str(out, 2, "活跃块设备数", buf, 0);
+	snprintf(buf, sizeof(buf), "%.2f / %.2f / %.2f",
+		 sys.load1, sys.load5, sys.load15);
+	json_kv_str(out, 2, "系统负载 (1m/5m/15m)", buf, 1);
+	json_obj_end(out, 1, 0);
+
+	json_arr_begin(out, 1, "sections");
+
+	// section: device stats table
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "设备 I/O 统计", 0);
+		fprintf(out, "          \"columns\": [\"设备\", \"类型\", \"IOPS\", \"读MB/s\", \"写MB/s\", "
+			"\"avg延迟\", \"P99\", \"P99.9\", \"队列深度%%\", \"缓存失效率%%\"],\n");
+		json_arr_begin(out, 3, "rows");
+
+		__u32 key = 0, next_key;
+		int row = 0;
+		while (bpf_map_get_next_key(stats_fd, &key, &next_key) == 0) {
+			struct dev_stats val = {};
+			if (bpf_map_lookup_elem(stats_fd, &next_key, &val) != 0)
+				{ key = next_key; continue; }
+			if (!dev_is_active(next_key, active_devs, active_count))
+				{ bpf_map_delete_elem(stats_fd, &next_key); key = next_key; continue; }
+			if (val.rd_count == 0 && val.wr_count == 0)
+				{ key = next_key; continue; }
+
+			__u32 dev = next_key;
+			unsigned int maj = dev >> 20, min = dev & 0xFFFFF;
+			unsigned long long total_ios = val.rd_count + val.wr_count;
+			double iops = (double)total_ios / interval_s;
+			double rd_mbps = (double)val.rd_bytes / interval_s / 1e6;
+			double wr_mbps = (double)val.wr_bytes / interval_s / 1e6;
+			double avg_lat_us = total_ios > 0
+				? (double)val.total_lat_ns / (double)total_ios / 1000.0 : 0;
+			double p99 = 0, p999 = 0;
+			{
+				unsigned long long accum = 0;
+				unsigned long long t99 = (unsigned long long)((double)total_ios * 0.99);
+				if (t99 == 0) t99 = 1;
+				unsigned long long t999 = (unsigned long long)((double)total_ios * 0.999);
+				if (t999 == 0) t999 = 1;
+				for (int i = 0; i < 16; i++) {
+					accum += val.lat_hist[i];
+					if (p99 == 0 && accum >= t99)
+						p99 = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
+					if (p999 == 0 && accum >= t999)
+						p999 = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
+				}
+			}
+			double miss_rate = val.total_rd_blks > 0
+				? (double)val.cache_miss_count / (double)val.total_rd_blks * 100.0 : 0;
+			int max_qd = 256;
+			char qpath[128];
+			snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/queue/nr_requests", maj, min);
+			FILE *qf = fopen(qpath, "r");
+			if (!qf) {
+				snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/../queue/nr_requests", maj, min);
+				qf = fopen(qpath, "r");
+			}
+			if (qf) { fscanf(qf, "%d", &max_qd); fclose(qf); }
+			double qd_use = max_qd > 0 ? (double)val.ic_qdepth_max / (double)max_qd * 100.0 : 0;
+			int kind = get_disk_kind(dev);
+			const char *kind_s = kind == 0 ? "NVMe" : kind == 1 ? "SSD" : kind == 2 ? "HDD" : "?";
+
+			if (row > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "[\"%u:%u\", \"%s\", \"%.0f\", \"%.1f\", \"%.1f\", \"%.1f\", \"%.1f\", \"%.1f\", \"%.0f%%\", \"%.1f%%\"]",
+				maj, min, kind_s, iops, rd_mbps, wr_mbps, avg_lat_us, p99, p999, qd_use, miss_rate);
+			row++;
+			key = next_key;
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: file concentration kv
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "kv", 0);
+		json_kv_str(out, 3, "title", "文件访问集中度", 0);
+		json_arr_begin(out, 3, "rows");
+
+		unsigned long long total_file_ios = 0;
+		unsigned long long top3_ios = 0;
+		__u64 fkey = 0, fnext;
+		struct hot_entry tops[3] = {};
+		int nt = 0;
+		while (bpf_map_get_next_key(file_stats_fd, &fkey, &fnext) == 0) {
+			struct file_io_stat fval = {};
+			if (bpf_map_lookup_elem(file_stats_fd, &fnext, &fval) != 0)
+				{ fkey = fnext; continue; }
+			unsigned long long ios = fval.rd_count + fval.wr_count;
+			total_file_ios += ios;
+			int pos = nt < 3 ? nt : -1;
+			if (pos < 0) {
+				for (int j = 0; j < 3; j++) {
+					if (ios > tops[j].stat.rd_count + tops[j].stat.wr_count)
+						{ pos = j; break; }
+				}
+				if (pos >= 0)
+					for (int j = 2; j > pos; j--) tops[j] = tops[j-1];
+			}
+			if (pos >= 0) {
+				tops[pos].file_key = fnext;
+				tops[pos].stat = fval;
+				if (nt < 3) nt++;
+			}
+			fkey = fnext;
+		}
+		for (int j = 0; j < nt; j++)
+			top3_ios += tops[j].stat.rd_count + tops[j].stat.wr_count;
+
+		double top3_pct = total_file_ios > 0
+			? (double)top3_ios / (double)total_file_ios * 100.0 : 0;
+		const char *conc = top3_pct > 70 ? "热点集中 (>70%)" :
+				   top3_pct > 50 ? "存在热点 (>50%)" : "分布均匀";
+
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"Top-3 IOPS 占比\", \"value\": \"%.1f%%\"},\n", top3_pct);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"总文件 IOPS\", \"value\": \"%.0f\"},\n",
+			total_file_ios > 0 ? (double)total_file_ios / interval_s : 0);
+		json_indent(out, 4);
+		fprintf(out, "{\"key\": \"集中度判定\", \"value\": \"%s\"}\n", conc);
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: cache thrash hotspots table
+	{
+		struct thrash_entry top[MAX_THRASH_ENTRIES];
+		int nr = 0;
+
+		struct block_read_key bkey = {}, bnext;
+		while (bpf_map_get_next_key(block_hist_fd, &bkey, &bnext) == 0) {
+			struct block_read_val val = {};
+			if (bpf_map_lookup_elem(block_hist_fd, &bnext, &val) != 0)
+				{ bkey = bnext; continue; }
+			if (val.read_count < 2) { bkey = bnext; continue; }
+
+			if (nr < MAX_THRASH_ENTRIES) {
+				top[nr].dev = bnext.dev;
+				top[nr].sector = bnext.sector;
+				top[nr].read_count = val.read_count;
+				nr++;
+				qsort(top, nr, sizeof(top[0]), cmp_thrash);
+			} else if (val.read_count > top[MAX_THRASH_ENTRIES - 1].read_count) {
+				top[MAX_THRASH_ENTRIES - 1].dev = bnext.dev;
+				top[MAX_THRASH_ENTRIES - 1].sector = bnext.sector;
+				top[MAX_THRASH_ENTRIES - 1].read_count = val.read_count;
+				qsort(top, nr, sizeof(top[0]), cmp_thrash);
+			}
+			bkey = bnext;
+		}
+
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "缓存颠簸热点 (重复读扇区)", 0);
+		fprintf(out, "          \"columns\": [\"设备\", \"扇区\", \"重复读次数\"],\n");
+		json_arr_begin(out, 3, "rows");
+
+		for (int i = 0; i < nr; i++) {
+			unsigned int maj = top[i].dev >> 20;
+			unsigned int min = top[i].dev & 0xFFFFF;
+			json_indent(out, 4);
+			fprintf(out, "[\"%u:%u\", \"%llu\", \"%u\"]%s\n",
+				maj, min, (unsigned long long)top[i].sector,
+				top[i].read_count, i < nr - 1 ? "," : "");
+		}
+		if (nr == 0) {
+			json_indent(out, 4);
+			fprintf(out, "[\"-\", \"-\", \"无缓存颠簸\"]");
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: hot files Top-10 table (需要重新扫描收集全部条目并排序)
+	{
+		struct hot_entry entries[10240];
+		int nr = 0;
+
+		__u64 fkey2 = 0, fnext2;
+		while (bpf_map_get_next_key(file_stats_fd, &fkey2, &fnext2) == 0
+		       && nr < 10240) {
+			struct file_io_stat fval = {};
+			if (bpf_map_lookup_elem(file_stats_fd, &fnext2, &fval) == 0) {
+				entries[nr].file_key = fnext2;
+				entries[nr].stat = fval;
+				nr++;
+			}
+			fkey2 = fnext2;
+		}
+
+		if (nr > 0) qsort(entries, nr, sizeof(entries[0]), cmp_hot_by_iops);
+
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "热点文件访问 Top-10", 0);
+		fprintf(out, "          \"columns\": [\"排名\", \"设备\", \"文件名\", \"进程\", \"IOPS\", \"读MB/s\", \"写MB/s\", \"平均延迟\"],\n");
+		json_arr_begin(out, 3, "rows");
+
+		int show = nr < 10 ? nr : 10;
+		for (int i = 0; i < show; i++) {
+			__u32 dev = (__u32)(entries[i].file_key >> 32);
+			unsigned int maj = dev >> 20, min = dev & 0xFFFFF;
+			struct file_io_stat *s = &entries[i].stat;
+			unsigned long long ios = s->rd_count + s->wr_count;
+			double iops = (double)ios / interval_s;
+			double rd_mbps = (double)s->rd_bytes / interval_s / 1e6;
+			double wr_mbps = (double)s->wr_bytes / interval_s / 1e6;
+			double avg_lat_us = ios > 0
+				? (double)s->total_lat_ns / (double)ios / 1000.0 : 0;
+
+			json_indent(out, 4);
+			fprintf(out, "[\"%d\", \"%u:%u\", \"%s\", \"%s\", \"%.0f\", \"%.1f\", \"%.1f\", \"%.1f\"]%s\n",
+				i + 1, maj, min,
+				s->fname[0] ? s->fname : "(unknown)",
+				s->comm[0]  ? s->comm  : "(unknown)",
+				iops, rd_mbps, wr_mbps, avg_lat_us,
+				i < show - 1 ? "," : "");
+		}
+		if (nr == 0) {
+			json_indent(out, 4);
+			fprintf(out, "[\"-\", \"-\", \"-\", \"-\", \"0\", \"0\", \"0\", \"0\"]");
+		}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section: diagnosis
+	{
+		// 计算文件热点集中度 (复用诊断逻辑)
+		unsigned long long diag_total_ios = 0;
+		unsigned long long diag_top3_ios = 0;
+		struct hot_entry diag_tops[3] = {};
+		int dt = 0;
+
+		__u64 dkey = 0, dnext;
+		while (bpf_map_get_next_key(file_stats_fd, &dkey, &dnext) == 0) {
+			struct file_io_stat fval = {};
+			if (bpf_map_lookup_elem(file_stats_fd, &dnext, &fval) != 0)
+				{ dkey = dnext; continue; }
+			unsigned long long ios = fval.rd_count + fval.wr_count;
+			diag_total_ios += ios;
+			int pos = dt < 3 ? dt : -1;
+			if (pos < 0) {
+				for (int j = 0; j < 3; j++) {
+					unsigned long long ti = diag_tops[j].stat.rd_count + diag_tops[j].stat.wr_count;
+					if (ios > ti) { pos = j; break; }
+				}
+				if (pos >= 0)
+					for (int j = 2; j > pos; j--) diag_tops[j] = diag_tops[j-1];
+			}
+			if (pos >= 0) {
+				diag_tops[pos].file_key = dnext;
+				diag_tops[pos].stat = fval;
+				if (dt < 3) dt++;
+			}
+			dkey = dnext;
+		}
+		for (int j = 0; j < dt; j++)
+			diag_top3_ios += diag_tops[j].stat.rd_count + diag_tops[j].stat.wr_count;
+		double diag_top3_pct = diag_total_ios > 0
+			? (double)diag_top3_ios / (double)diag_total_ios * 100.0 : 0;
+
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "diagnosis", 0);
+		json_kv_str(out, 3, "title", "I/O 异常诊断", 0);
+		json_arr_begin(out, 3, "findings");
+
+		__u32 ddev = 0, ddev_next;
+		int diag_seq = 0;
+
+		while (bpf_map_get_next_key(stats_fd, &ddev, &ddev_next) == 0) {
+			struct dev_stats val = {};
+			if (bpf_map_lookup_elem(stats_fd, &ddev_next, &val) != 0)
+				{ ddev = ddev_next; continue; }
+
+			__u32 dev = ddev_next;
+			unsigned long long total_ios = val.rd_count + val.wr_count;
+			if (total_ios < 10) { ddev = ddev_next; continue; }
+
+			unsigned int maj = dev >> 20;
+			unsigned int min = dev & 0xFFFFF;
+			int kind = get_disk_kind(dev);
+			const char *type_label = kind == 0 ? "NVMe" : kind == 1 ? "SSD" : kind == 2 ? "HDD" : "unknown";
+
+			double avg_lat_us = (double)val.total_lat_ns / (double)total_ios / 1000.0;
+			double avg_qwait_us = (double)val.total_qwait_ns / (double)total_ios / 1000.0;
+			double p99_us = 0;
+			{
+				unsigned long long accum = 0;
+				unsigned long long t99 = (unsigned long long)((double)total_ios * 0.99);
+				if (t99 == 0) t99 = 1;
+				for (int i = 0; i < HIST_SLOTS; i++) {
+					accum += val.lat_hist[i];
+					if (p99_us == 0 && accum >= t99)
+						p99_us = (i == 0) ? 2.0 : (double)(1ULL << (i + 1));
+				}
+			}
+
+			int has_reads = (val.total_rd_blks > 0);
+			double miss_rate = has_reads
+				? (double)val.cache_miss_count / (double)val.total_rd_blks * 100.0 : 0;
+
+			int max_qd = 256;
+			{
+				char qpath[128];
+				snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/queue/nr_requests", maj, min);
+				FILE *qf = fopen(qpath, "r");
+				if (!qf) {
+					snprintf(qpath, sizeof(qpath), "/sys/dev/block/%u:%u/../queue/nr_requests", maj, min);
+					qf = fopen(qpath, "r");
+				}
+				if (qf) { fscanf(qf, "%d", &max_qd); fclose(qf); }
+			}
+			double qd_usage_pct = max_qd > 0
+				? (double)val.ic_qdepth_max / (double)max_qd * 100.0 : 0;
+
+			// 设备阈值
+			double p99_hi = kind == 0 ? 500.0 : kind == 1 ? 2000.0 : kind == 2 ? 10000.0 : 5000.0;
+			double qwait_hi = kind == 0 ? 100.0 : kind == 1 ? 500.0 : kind == 2 ? 5000.0 : 2000.0;
+
+			int flag_lat  = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+			int flag_qd   = (qd_usage_pct > 70.0);
+			int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
+			int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
+			int flag_hot   = (diag_total_ios >= MIN_FILE_IOS_FOR_HOT && diag_top3_pct > 70.0);
+			int triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
+
+			if (triggers == 0) { ddev = ddev_next; continue; }
+
+			const char *root_cause = NULL;
+			const char *anomaly_type = NULL;
+			int is_real_anom = 1;
+			if (flag_qd && flag_lat) {
+				anomaly_type = "I/O 延迟抖动";
+				root_cause = "磁盘队列过深 — 并发请求超出设备处理能力";
+			} else if (flag_lat && flag_hot) {
+				anomaly_type = "I/O 延迟抖动";
+				root_cause = "热点文件访问集中 — 少量文件占用大量 I/O 带宽";
+			} else if (flag_cache && flag_lat) {
+				anomaly_type = "I/O 延迟抖动";
+				root_cause = "页面缓存失效 — 缓存空间被占满，同块数据反复从磁盘重读";
+			} else if (flag_qwait && flag_lat) {
+				anomaly_type = "I/O 延迟抖动";
+				root_cause = "多作业并发争抢 — 请求在调度层排队等待时间显著增加";
+			} else if (flag_qd) {
+				anomaly_type = "注意: 队列瞬时拥堵 (未构成异常)";
+				root_cause = "队列瞬时拥堵 — 短时间内大量 IO 涌入导致处理积压, 暂未引起时延升高";
+				is_real_anom = 0;
+			} else if (flag_cache) {
+				anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
+				root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
+				is_real_anom = 0;
+			} else if (flag_lat) {
+				anomaly_type = "I/O 延迟抖动";
+				root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
+			} else if (flag_hot) {
+				anomaly_type = "注意: 热点文件集中 (未构成异常)";
+				root_cause = "单一文件占主导 — 当前负载主要集中在个别文件, 暂未引起 I/O 延迟升高";
+				is_real_anom = 0;
+			} else {
+				anomaly_type = "I/O 异常波动";
+				root_cause = "多因素综合 — 建议结合系统日志进一步排查";
+			}
+
+			if (diag_seq > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+
+			char tbuf[128];
+			snprintf(tbuf, sizeof(tbuf), "块设备 %u:%u (%s)", maj, min, type_label);
+			json_kv_str(out, 5, "target", tbuf, 0);
+			json_kv_bool(out, 5, "is_anomaly", is_real_anom, 0);
+			json_kv_str(out, 5, "subtype", anomaly_type, 0);
+			json_kv_str(out, 5, "root_cause", root_cause, 0);
+			json_kv_str(out, 5, "suggestion",
+				"审查 I/O 调度策略、扩展队列深度或优化热点文件访问模式", 0);
+
+				snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+				json_kv_str(out, 5, "time_window", buf, 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f us (阈值: %.0f us)", p99_us, p99_hi);
+			json_kv_str(out, 6, "P99 时延", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f us", avg_lat_us);
+			json_kv_str(out, 6, "平均时延", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f us (阈值: %.0f us)", avg_qwait_us, qwait_hi);
+			json_kv_str(out, 6, "排队等待", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f%%", qd_usage_pct);
+			json_kv_str(out, 6, "队列深度使用率", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f%%", miss_rate);
+			json_kv_str(out, 6, "缓存失效率", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f", (double)total_ios / interval_s);
+			json_kv_str(out, 6, "IOPS", kmbuf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			int ev = 0;
+			if (flag_lat) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"P99 时延 %.1f us 超出 %s 阈值 %.0f us\"", p99_us, type_label, p99_hi);
+				ev++;
+			}
+			if (flag_qd) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"队列深度峰值 %llu，达到内核上限 %d 的 %.0f%%\"", val.ic_qdepth_max, max_qd, qd_usage_pct);
+				ev++;
+			}
+			if (flag_qwait) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"平均排队等待 %.1f us 显著偏高（阈值 %.0f us）\"", avg_qwait_us, qwait_hi);
+				ev++;
+			}
+			if (flag_cache) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"缓存失效率 %.1f%% (阈值 10.0%%)，同块数据被重复读取 %llu 次\"", miss_rate, val.cache_miss_count);
+				ev++;
+			}
+			if (flag_hot) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"Top-3 热点文件占全局 IOPS 的 %.1f%% (阈值 70%%)，访问高度集中\"", diag_top3_pct);
+				ev++;
+			}
+			fprintf(out, "\n            ]\n");
+
+			diag_seq++;
+			json_obj_end(out, 4, 1);
+			ddev = ddev_next;
+		}
+
+		if (diag_seq == 0) {
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+			json_kv_str(out, 5, "target", "I/O 子系统", 0);
+			json_kv_bool(out, 5, "is_anomaly", 0, 0);
+			json_kv_str(out, 5, "subtype", "正常", 0);
+			json_kv_str(out, 5, "root_cause", "未检测到明显 I/O 异常", 0);
+			json_kv_str(out, 5, "suggestion", "所有设备指标在正常范围内", 0);
+
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, interval_s);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
+			json_obj_begin(out, 5, "key_metrics");
+			char kmbuf[128];
+			snprintf(kmbuf, sizeof(kmbuf), "%.0f", (double)diag_total_ios / interval_s);
+			json_kv_str(out, 6, "全局 IOPS", kmbuf, 0);
+			snprintf(kmbuf, sizeof(kmbuf), "%.1f%%", diag_top3_pct);
+			json_kv_str(out, 6, "热点文件 IOPS 占比", kmbuf, 1);
+			json_obj_end(out, 5, 0);
+
+			fprintf(out, "            \"evidence\": [\n");
+			fprintf(out, "              \"所有块设备 I/O 时延、队列深度、缓存命中率均在正常范围\"\n");
+			fprintf(out, "            ]\n");
+			fprintf(out, "          }");
+			}
+		fprintf(out, "\n");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 1);
+	}
+
+	json_arr_end(out, 1, 1);
+	fprintf(out, "}\n");
+	json_close(out);
+	fprintf(stderr, "[*] JSON 报告已写入 %s\n", path);
+}
+
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -754,35 +1257,53 @@ static void usage(const char *prog)
 		"采集吞吐、延迟、队列深度等指标。\n"
 		"\n"
 		"选项:\n"
-		"  -i <秒>    采样间隔（默认: %d）\n"
-		"  -d <秒>    总运行时长，0 表示持续运行（默认: 0）\n"
-		"  -h         显示本帮助信息\n"
+		"  -i, --interval <秒>   采样间隔（默认: %d）\n"
+		"  -d, --duration <秒>   总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -o, --output <路径>   输出到文件（默认: 标准输出）\n"
+		"  -j, --json            输出 JSON + Markdown 报告到 report/ 目录\n"
+		"  -h, --help            显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                  # 默认参数运行\n"
-		"  sudo %s -i 5 -d 30      # 每 5 秒采样，运行 30 秒\n",
-		prog, DEFAULT_INTERVAL, prog, prog);
+		"  sudo %s -i 5 -d 30      # 每 5 秒采样，运行 30 秒\n"
+		"  sudo %s -j -d 30        # 输出 JSON 诊断报告\n",
+		prog, g_cfg.io_interval, prog, prog, prog);
 }
 
 int run_io(int argc, char **argv)
 {
-	int interval = DEFAULT_INTERVAL;
+	int interval = g_cfg.io_interval;
 	int duration = 0;
+	int json_output = 0;
+	const char *output_file = NULL;
+
+	static struct option long_opts[] = {
+		{"interval", required_argument, 0, 'i'},
+		{"duration", required_argument, 0, 'd'},
+		{"output",   required_argument, 0, 'o'},
+		{"json",     no_argument,       0, 'j'},
+		{"help",     no_argument,       0, 'h'},
+		{0, 0, 0, 0}
+	};
 
 	int opt;
-	while ((opt = getopt(argc, argv, "i:d:h")) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:jh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
+		case 'o': output_file = optarg; break;
+		case 'j': json_output = 1; break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
 	}
 
-	if (interval < 1) {
-		fprintf(stderr, "采样间隔必须 >= 1\n");
+	if (check_interval(interval) != 0)
 		return 1;
-	}
+
+	FILE *out = open_output(output_file);
+	if (!out)
+		return 1;
 
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
@@ -842,21 +1363,28 @@ int run_io(int argc, char **argv)
 	while (!exiting) {
 		sleep(interval);
 
-		print_io_report(stdout, stats_fd, req_fd, (double)interval);
-		print_cache_thrash_report(stdout, block_hist_fd);
-    print_hotfile_report(stdout, hotfile_stats_fd, (double)interval);
-		print_diagnosis(stdout, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
-    reset_file_stats(hotfile_stats_fd);
+		print_io_report(out, stats_fd, req_fd, (double)interval);
+		print_cache_thrash_report(out, block_hist_fd);
+		print_hotfile_report(out, hotfile_stats_fd, (double)interval);
+		print_diagnosis(out, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
+
+		if (exiting || (duration > 0 && time(NULL) - start >= duration))
+			break;
+
+		reset_file_stats(hotfile_stats_fd);
 		reset_dev_stats(stats_fd);
 		reset_block_read_hist(block_hist_fd);
+	}
 
-		if (duration > 0 && time(NULL) - start >= duration)
-			break;
+	if (json_output) {
+		print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
+		json_to_markdown("report/io.json", "report/io.md");
 	}
 
 	fprintf(stderr, "[*] 正在退出...\n");
 	io_anomaly_bpf__destroy(skel);
   hotfile_bpf__destroy(hot_skel);
+	if (output_file) fclose(out);
 
 	return 0;
 }

@@ -1,0 +1,103 @@
+name: ARM64 Build Test
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - src/**
+      - include/**
+      - Makefile
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ARM64 多平台适配验证: 原生构建 + 冒烟测试
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
+          # ubuntu 24.04 默认 clang 18 的 BPF 后端编译本项目会崩溃
+          # (unimplemented opcode)，与构建镜像保持一致使用 LLVM 19
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+          clang --version
+
+      # 各发行版 bpftool 打包方式不一，从源码构建保证可用且行为一致
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
+          sudo bpftool version
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 验证二进制
+        run: |
+          test -x ./eebpf
+          ./eebpf --version
+
+      - name: 冒烟测试
+        run: |
+          set -e
+
+          # hot: 系统调用热点 (CPU 压力触发高频 syscall)
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo ./eebpf hot -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # cpu: CPU 计算压力
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo ./eebpf cpu -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # mem: 内存分配压力
+          stress-ng --vm 2 --vm-bytes 128M &
+          SPID=$!
+          sleep 1
+          sudo ./eebpf mem -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # io: I/O 压力
+          stress-ng --hdd 2 --hdd-bytes 32M &
+          SPID=$!
+          sleep 1
+          sudo ./eebpf io -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          # lock: futex 锁竞争
+          stress-ng --futex 2 &
+          SPID=$!
+          sleep 1
+          sudo ./eebpf lock -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          echo "ALL PASS"

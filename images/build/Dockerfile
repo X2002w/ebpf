@@ -1,4 +1,4 @@
-ARG OPENKYLIN_IMAGE=docker.io/openkylin/openkylin:latest@sha256:0afa429029ffa4c969354d048ce9b3138cbb2bf497e64be89d80c66372c58aa4
+ARG OPENKYLIN_IMAGE=docker.io/openkylin/openkylin:2.0@sha256:ead96f8876f756fdd71e89887fd16a4cd468c9dfb8bc4bf61a72c5fd9b90e766
 
 FROM ${OPENKYLIN_IMAGE} AS bpftool-builder
 

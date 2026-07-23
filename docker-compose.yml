@@ -6,6 +6,8 @@ services:
     image: eebpf-dev:latest
     container_name: openkylin-dev
     network_mode: host
+    # 共享宿主 PID 命名空间，/proc 可见宿主进程且 /proc/sys 可写(schedstats 开关)
+    pid: host
     privileged: true
     cap_add:
       - BPF
@@ -19,5 +21,4 @@ services:
       - /sys/kernel/tracing:/sys/kernel/tracing:rw
       - /boot:/boot:ro
       - /sys:/sys:ro
-      - /proc:/proc:ro
     restart: unless-stopped

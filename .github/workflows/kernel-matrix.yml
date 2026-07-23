@@ -1,0 +1,122 @@
+name: Kernel Matrix Test
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - src/**
+      - include/**
+      - Makefile
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  KERNEL_TOOL: ghcr.io/cilium/ci-kernels
+
+jobs:
+  kernel-matrix:
+    strategy:
+      fail-fast: false
+      matrix:
+        kernel: ["6.1", "6.6", "6.12", "stable"]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # 确保 /dev/kvm 可读写（嵌套虚拟化默认无普通用户权限）
+      - name: 启用 KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      # 从 cilium 官方 CI 镜像拉取预构建内核（已配好 BTF/BPF/TRACEPOINT）
+      - name: 拉取内核 ${{ matrix.kernel }}
+        run: |
+          docker pull -q $KERNEL_TOOL:${{ matrix.kernel }}
+          mkdir -p kernel
+          docker create --name ktmp $KERNEL_TOOL:${{ matrix.kernel }} true
+          docker cp ktmp:/boot/vmlinuz kernel/vmlinuz
+          docker rm ktmp
+
+      - name: 安装 QEMU 与 virtme-ng
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 pipx
+          pipx install --force virtme-ng
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: 安装 Clang 19 并构建 eebpf
+        run: |
+          sudo apt-get install -y --no-install-recommends \
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg stress-ng
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
+          make -j$(nproc)
+
+      - name: 冒烟测试 (内核 ${{ matrix.kernel }})
+        run: |
+          vng -r kernel/vmlinuz --cpus 2 --memory 4G --user root -- \
+            bash -c '
+            set -e
+            uname -r
+
+            # hot: 系统调用热点 (CPU 压力触发高频 syscall)
+            stress-ng --cpu 2 &
+            SPID=$!
+            sleep 1
+            ./eebpf hot -i 2 -d 4 -j
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # cpu: CPU 计算压力
+            stress-ng --cpu 2 &
+            SPID=$!
+            sleep 1
+            ./eebpf cpu -i 2 -d 4 -p 0 -j
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # mem: 内存分配压力
+            stress-ng --vm 2 --vm-bytes 128M &
+            SPID=$!
+            sleep 1
+            ./eebpf mem -i 2 -d 4 -j
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # io: I/O 压力
+            stress-ng --hdd 2 --hdd-bytes 32M &
+            SPID=$!
+            sleep 1
+            ./eebpf io -i 2 -d 4 -j
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            # lock: futex 锁竞争
+            stress-ng --futex 2 &
+            SPID=$!
+            sleep 1
+            ./eebpf lock -i 2 -d 4 -p 0 -j
+            kill $SPID 2>/dev/null || true
+            wait $SPID 2>/dev/null || true
+
+            echo "ALL PASS"
+          '

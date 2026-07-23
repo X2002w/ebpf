@@ -22,20 +22,19 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
+#include "../include/report_json.h"
 #include "../include/report_md.h"
 #include "../include/cpu_anomaly.h"
+#include "../include/common.h"
+#include "../include/config.h"
 
-// ─── 配置常量 ────────────────────────────────────────────────────
-#define DEFAULT_INTERVAL      5       // 采样间隔 (秒)
-#define DEFAULT_CPU_THRESHOLD 90.0    // CPU% 异常阈值
-#define DEFAULT_PROFILE_HZ    99      // 栈采样频率
+// 配置常量
 #define CSWITCH_WARN_PER_MIN  30000   // cswitch/min 警告阈值
 #define CSWITCH_CRIT_PER_MIN  50000   // cswitch/min 严重阈值
 #define SCHED_DELAY_WARN_US   5000    // avg 调度延迟 警告阈值 (us)
 #define SCHED_DELAY_CRIT_US   20000   // avg 调度延迟 严重阈值 (us)
 #define BUSYLOOP_CS_PER_MIN   5000    // busy loop 判定: 切换 < 5000/min
 #define STACK_CONC_RATIO      0.8     // 栈集中度: top1 占比 > 80% = 集中
-#define VOLUNTARY_RATIO_HIGH  0.5     // 主动切换占比 > 50% = 偏高
 
 // ─── 统计结构 (必须与 BPF 侧一致) ────────────────────────────────
 // 后续改为统一在 common.h 里定义
@@ -71,32 +70,11 @@ struct stack_entry {
 
 #include "../include/utils.h"
 
-// ─── perf_event_open 系统调用封装 ─────────────────────────────────
-static int perf_event_open(struct perf_event_attr *attr, pid_t pid,
-                           int cpu, int group_fd, unsigned long flags)
-{
-	return syscall(__NR_perf_event_open, attr, pid, cpu, group_fd, flags);
-}
-
 // ─── libbpf 日志 ─────────────────────────────────────────────────
 static int print_fn(enum libbpf_print_level lvl, const char *fmt, va_list ap)
 {
 	if (lvl == LIBBPF_DEBUG) return 0;
 	return vfprintf(stderr, fmt, ap);
-}
-
-// ─── 读取 /proc/<pid>/comm ───────────────────────────────────────
-static void read_comm(__u32 pid, char *buf, size_t len)
-{
-	char path[64];
-	snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) { snprintf(buf, len, "<exited>"); return; }
-	if (fgets(buf, len, f))
-		buf[strcspn(buf, "\n")] = '\0';
-	else
-		snprintf(buf, len, "<?>");
-	fclose(f);
 }
 
 // ─── 收集 map 中所有进程统计 ─────────────────────────────────────
@@ -138,71 +116,6 @@ static int collect_procs(int map_fd, struct proc_info **out, int *out_count)
 
 	*out_count = count;
 	return 0;
-}
-
-// ─── 重置 pid_stats map ─────────────────────────────────────────
-static void reset_pid_stats(int map_fd)
-{
-	__u32 key = 0, next_key;
-	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-		bpf_map_delete_elem(map_fd, &next_key);
-		key = next_key;
-	}
-}
-
-// 系统负载 与 run queue 深度 
-// /proc/loadavg 与 /proc/stat 是 procfs 标准接口，Linux 2.6+ 所有发行版通用
-struct sys_metrics {
-  // 系统 1, 5, 15分钟时的平均负载
-	double load1, load5, load15;
-
-  // 瞬时 run queue 深度 -> 系统正在运行or可运行的进程数
-	int procs_running;    
-
-  // 当前被阻塞的进程数(wait IO)
-	int procs_blocked;    
-};
-
-
-// 读取系统指标
-static int read_sys_metrics(struct sys_metrics *m)
-{
-	memset(m, 0, sizeof(*m));
-
-	FILE *f = fopen("/proc/loadavg", "r");
-	if (f) {
-
-    // 当前运行进程 / 总进程数
-		int running = 0, total = 0;
-		fscanf(f, "%lf %lf %lf %d/%d",
-		       &m->load1, &m->load5, &m->load15,
-		       &running, &total);
-		fclose(f);
-	}
-
-	// /proc/stat 提供更精确的瞬时值
-	f = fopen("/proc/stat", "r");
-	if (f) {
-		char line[128];
-		while (fgets(line, sizeof(line), f)) {
-			if (sscanf(line, "procs_running %d", &m->procs_running) == 1)
-				continue;
-			if (sscanf(line, "procs_blocked %d", &m->procs_blocked) == 1)
-				break;
-		}
-		fclose(f);
-	}
-	return 0;
-}
-
-// ─── 重置 stack_counts map ──────────────────────────────────────
-static void reset_stack_counts(int map_fd)
-{
-	__u32 key = 0, next_key;
-	while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-		bpf_map_delete_elem(map_fd, &next_key);
-		key = next_key;
-	}
 }
 
 // ─── CPU% 比较 (降序) ────────────────────────────────────────────
@@ -310,48 +223,7 @@ static void check_scheduler_info(struct cpu_anomaly_bpf *skel,
   bpf_map_lookup_elem(bpf_map__fd(skel->maps.sched_class_check), &zero, &fair_count);
 }
 
-// 将 IP 地址解析为模块名+偏移 
-static void resolve_ip(pid_t pid, __u64 ip, char *out_buf, size_t len)
-{
-	char path[64];
-
-  // 根据pid读取 指定map
-	snprintf(path, sizeof(path), "/proc/%d/maps", pid);
-	FILE *f = fopen(path, "r");
-	if (!f) {
-		snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
-		return;
-	}
-
-	char line[512];
-	while (fgets(line, sizeof(line), f)) {
-		unsigned long start, end, offset, inode;
-		char perms[8], name[256] = "";
-		// /proc/pid/maps数据格式: start-end perms offset dev inode [name]
-		int n = sscanf(line, "%lx-%lx %7s %lx %*x:%*x %ld %255s",
-			       &start, &end, perms, &offset, &inode, name);
-		if (n < 3) continue;
-
-		if (ip >= start && ip < end) {
-			// 跳过不可执行区域
-			if (n >= 5 && name[0] != '\0')
-				snprintf(out_buf, len, "%s+0x%llx", name,
-					 (unsigned long long)(ip - start));
-			else if (inode == 0)
-				snprintf(out_buf, len, "[vdso/vvar] 0x%llx",
-					 (unsigned long long)ip);
-			else
-				snprintf(out_buf, len, "[anon:%lx] 0x%llx",
-					 inode, (unsigned long long)ip);
-			fclose(f);
-			return;
-		}
-	}
-	fclose(f);
-	snprintf(out_buf, len, "0x%llx", (unsigned long long)ip);
-}
-
-// 输出一条调用栈链路 
+// 输出一条调用栈链路
 static void print_call_stack(FILE *out, int stackmap_fd, __s32 stack_id,
 			     pid_t resolve_pid, const char *prefix)
 {
@@ -709,43 +581,19 @@ static void print_report(FILE *out,
 	fflush(out);
 }
 
-// ─── JSON 字符串转义 ──────────────────────────────────────────────
-static void json_escape(FILE *out, const char *s)
-{
-	fputc('"', out);
-	for (; *s; s++) {
-		switch (*s) {
-		case '"':  fputs("\\\"", out); break;
-		case '\\': fputs("\\\\", out); break;
-		case '\n': fputs("\\n", out); break;
-		case '\r': fputs("\\r", out); break;
-		case '\t': fputs("\\t", out); break;
-		default:   fputc(*s, out);
-		}
-	}
-	fputc('"', out);
-}
-
-// ─── 缩进辅助 ────────────────────────────────────────────────────
-static void indent(FILE *out, int n)
-{
-	for (int i = 0; i < n; i++) fputs("  ", out);
-}
-
-// ─── JSON 报告输出 (写入 report.json) ─────────────────────────────
+// ─── JSON 报告输出 (使用统一 report_json 构建器) ─────────────────
 static void print_json_report(struct proc_info *procs, int count,
 			      __u64 total_interval_ns, int ncpu,
 			      double cpu_threshold,
 			      struct stack_entry *stacks, int stack_count,
 			      __u64 total_stack_samples,
-			      int schedstats_on)
+			      int schedstats_on,
+			      const char *sched_name, const char *preempt_model,
+			      int stackmap_fd)
 {
-	const char *path = "report.json";
-	FILE *out = fopen(path, "w");
-	if (!out) {
-		fprintf(stderr, "[!] 无法写入 %s: %s\n", path, strerror(errno));
-		return;
-	}
+	const char *path = "report/cpu.json";
+	FILE *out = json_open(path);
+	if (!out) return;
 
 	char ts[32];
 	iso_timestamp(ts, sizeof(ts));
@@ -763,131 +611,375 @@ static void print_json_report(struct proc_info *procs, int count,
 				      (double)total_stack_samples;
 	}
 
+	// 顶层对象
 	fprintf(out, "{\n");
-	indent(out, 1); fprintf(out, "\"anomaly_time_window\": "); json_escape(out, ts); fprintf(out, ",\n");
-	indent(out, 1); fprintf(out, "\"duration_s\": %.1f,\n", duration_s);
-	indent(out, 1); fprintf(out, "\"ncpu\": %d,\n", ncpu);
-	indent(out, 1); fprintf(out, "\"system_load\": { \"load1\": %.2f, \"load5\": %.2f, \"load15\": %.2f },\n",
-	       sys.load1, sys.load5, sys.load15);
-	indent(out, 1); fprintf(out, "\"runq_depth\": { \"running\": %d, \"blocked\": %d },\n",
-	       sys.procs_running, sys.procs_blocked);
-	indent(out, 1); fprintf(out, "\"schedstats_on\": %s,\n", schedstats_on ? "true" : "false");
-	indent(out, 1); fprintf(out, "\"cpu_threshold\": %.0f,\n", cpu_threshold);
-	indent(out, 1); fprintf(out, "\"total_procs\": %d,\n", count);
-	indent(out, 1); fprintf(out, "\"top_procs\": [\n");
+	json_kv_str(out, 1, "module", "cpu", 0);
+	json_kv_str(out, 1, "timestamp", ts, 0);
+	json_kv_double(out, 1, "duration_s", duration_s, "%.1f", 0);
 
-	int limit = count < 20 ? count : 20;
-	for (int i = 0; i < limit; i++) {
-		struct pid_stats *s = &procs[i].stats;
-		__u64 cpu_ns = (schedstats_on && s->cpu_runtime_ns > 0)
-				? s->cpu_runtime_ns : s->on_cpu_ns;
-		double cpu_pct = (double)cpu_ns / (double)total_interval_ns * 100.0;
-		double cswitch_pm = (s->cswitch_total > 0)
-			? (double)s->cswitch_total / ((double)total_interval_ns / 60e9) : 0;
-		double avg_delay_us;
-		if (s->wait_ns > 0 && s->wakeup_count > 0)
-			avg_delay_us = (double)s->wait_ns / (double)s->wakeup_count / 1000.0;
-		else if (s->wakeup_count > 0)
-			avg_delay_us = (double)s->total_sched_delay_ns /
-				       (double)s->wakeup_count / 1000.0;
-		else
-			avg_delay_us = 0;
-		double max_delay_us = (double)s->max_sched_delay_ns / 1000.0;
-		double vol_ratio = (s->cswitch_total > 0)
-			? (double)s->cswitch_voluntary / (double)s->cswitch_total : 0;
-		double futex_avg_us = (s->futex_wait_count > 0)
-			? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0 : 0;
+	// system
+	char buf[256];
+	json_obj_begin(out, 1, "system");
+	snprintf(buf, sizeof(buf), "%d", ncpu);
+	json_kv_str(out, 2, "CPU 核心数", buf, 0);
+	snprintf(buf, sizeof(buf), "%d", count);
+	json_kv_str(out, 2, "活跃进程数", buf, 0);
+	json_kv_str(out, 2, "调度器", sched_name, 0);
+	json_kv_str(out, 2, "抢占模型", preempt_model, 0);
+	json_kv_str(out, 2, "schedstats",
+		    schedstats_on ? "启用 (精确核算)" : "未启用 (挂墙时间)", 0);
+	snprintf(buf, sizeof(buf), "%.2f / %.2f / %.2f",
+		 sys.load1, sys.load5, sys.load15);
+	json_kv_str(out, 2, "系统负载 (1m/5m/15m)", buf, 0);
+	snprintf(buf, sizeof(buf), "%d", sys.procs_running);
+	json_kv_str(out, 2, "RunQ 深度 (瞬时)", buf, 0);
+	snprintf(buf, sizeof(buf), "%d", sys.procs_blocked);
+	json_kv_str(out, 2, "不可中断阻塞", buf, 0);
+	snprintf(buf, sizeof(buf), "%.0f%%", cpu_threshold);
+	json_kv_str(out, 2, "CPU 异常阈值", buf, 1);
+	json_obj_end(out, 1, 0);
 
-		int is_anomaly = 0;
-		const char *subtype = NULL;
-		const char *root_cause = NULL;
-		const char *suggestion = NULL;
+	// sections 数组
+	json_arr_begin(out, 1, "sections");
 
-		if (cpu_pct > cpu_threshold) {
-			is_anomaly = 1;
-			if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-			    stack_concentration > STACK_CONC_RATIO) {
-				subtype = "CPU异常占用 (busy loop)";
-				root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
-				suggestion = "perf top 定位到具体函数后检查循环退出条件；考虑添加 usleep/yield";
-			} else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-			           total_stack_samples == 0) {
-				subtype = "CPU异常占用 (疑为 busy loop)";
-				root_cause = "进程切换频率极低，疑似 busy loop；建议启用栈采样确认";
-				suggestion = "使用 --profile 启用栈采样定位热点函数；或使用 perf top 观察";
-			} else if (s->cswitch_involuntary > s->cswitch_voluntary * 10) {
-				subtype = "CPU异常占用 (CPU 密集计算)";
-				root_cause = "用户态 CPU 密集型计算致 CPU 饱和，进程长期占核被反复抢占";
-				suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
-			} else {
-				subtype = "CPU异常占用";
-				root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
-				suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
+	// section 1: stacks (if available)
+	if (total_stack_samples > 0 && stack_count > 0) {
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "stacks", 0);
+		json_kv_str(out, 3, "title", "栈采样概要", 0);
+		json_kv_uint(out, 3, "total_samples", total_stack_samples, 0);
+		json_arr_begin(out, 3, "top_stacks");
+		int top_n = stack_count < 5 ? stack_count : 5;
+		pid_t resolve_pid = (count > 0) ? procs[0].pid : getpid();
+		for (int i = 0; i < top_n; i++) {
+			json_obj_begin_nokey(out, 4);
+			json_kv_int(out, 5, "rank", i + 1, 0);
+			json_kv_uint(out, 5, "count", stacks[i].count, 0);
+			json_kv_double(out, 5, "pct",
+				(double)stacks[i].count / (double)total_stack_samples * 100.0,
+				"%.1f", 0);
+
+			// 解析调用栈帧
+			__u64 ips[127];
+			memset(ips, 0, sizeof(ips));
+			int depth = 0;
+			if (stackmap_fd >= 0 &&
+			    bpf_map_lookup_elem(stackmap_fd, &stacks[i].stack_id, ips) == 0) {
+				for (int j = 0; j < 127 && ips[j] != 0; j++)
+					depth++;
 			}
-		}
-		if (!is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
-		    cswitch_pm > CSWITCH_WARN_PER_MIN) {
-			is_anomaly = 1;
-			subtype = "线程/锁竞争";
-			if (s->futex_wait_count > 0) {
-				root_cause = "自愿切换占比高 + futex 等待显著，多线程锁竞争或同步等待";
-				suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式";
-			} else {
-				root_cause = "自愿切换占比高，疑似锁等待或 I/O 阻塞";
-				suggestion = "使用 off-CPU 火焰图分析阻塞原因；考虑 strace 观察系统调用模式";
+
+			json_arr_begin(out, 5, "frames");
+			for (int j = 0; j < depth; j++) {
+				char sym[256];
+				resolve_ip(resolve_pid, ips[j], sym, sizeof(sym));
+				json_indent(out, 6);
+				fprintf(out, "\"%s\"%s\n", sym, j < depth - 1 ? "," : "");
 			}
+			json_arr_end(out, 5, 1);
+			json_obj_end(out, 4, i == top_n - 1);
 		}
-		if (avg_delay_us > SCHED_DELAY_CRIT_US) {
-			if (!is_anomaly) { is_anomaly = 1; subtype = "调度延迟异常"; }
-			if (!root_cause) root_cause = "调度延迟显著偏高，CPU 资源竞争或 run queue 拥堵";
-			if (!suggestion) suggestion = "检查 run queue 深度和 CPU 负载；考虑增加 CPU 资源或调整进程优先级";
-		} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
-			if (!is_anomaly) { is_anomaly = 1; subtype = "调度延迟偏高"; }
-			if (!root_cause) root_cause = "CPU 负载较高致调度延迟升高";
-			if (!suggestion) suggestion = "监控 run queue 深度变化趋势";
-		}
-		if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !is_anomaly) {
-			is_anomaly = 1;
-			subtype = "上下文切换风暴";
-			root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
-			suggestion = "检查线程池大小；排查不必要的 wakeup；使用 off-CPU 分析定位阻塞源";
-		}
-
-		indent(out, 2); fprintf(out, "{\n");
-		indent(out, 3); fprintf(out, "\"anomaly_time_window\": "); json_escape(out, ts); fprintf(out, ",\n");
-		indent(out, 3); fprintf(out, "\"pid\": %u,\n", procs[i].pid);
-		indent(out, 3); fprintf(out, "\"comm\": "); json_escape(out, procs[i].comm); fprintf(out, ",\n");
-		indent(out, 3); fprintf(out, "\"cpu_pct\": %.1f,\n", cpu_pct);
-		indent(out, 3); fprintf(out, "\"cpu_ns\": %llu,\n", (unsigned long long)cpu_ns);
-		indent(out, 3); fprintf(out, "\"cswitch_per_min\": %.0f,\n", cswitch_pm);
-		indent(out, 3); fprintf(out, "\"cswitch_voluntary\": %llu,\n",
-			(unsigned long long)s->cswitch_voluntary);
-		indent(out, 3); fprintf(out, "\"cswitch_involuntary\": %llu,\n",
-			(unsigned long long)s->cswitch_involuntary);
-		indent(out, 3); fprintf(out, "\"voluntary_ratio\": %.3f,\n", vol_ratio);
-		indent(out, 3); fprintf(out, "\"avg_sched_delay_us\": %.1f,\n", avg_delay_us);
-		indent(out, 3); fprintf(out, "\"max_sched_delay_us\": %.1f,\n", max_delay_us);
-		indent(out, 3); fprintf(out, "\"wakeup_count\": %llu,\n",
-			(unsigned long long)s->wakeup_count);
-		indent(out, 3); fprintf(out, "\"wait_ns\": %llu,\n", (unsigned long long)s->wait_ns);
-		indent(out, 3); fprintf(out, "\"sleep_ns\": %llu,\n", (unsigned long long)s->sleep_ns);
-		indent(out, 3); fprintf(out, "\"blocked_ns\": %llu,\n", (unsigned long long)s->blocked_ns);
-		indent(out, 3); fprintf(out, "\"migrate_count\": %llu,\n",
-			(unsigned long long)s->migrate_count);
-		indent(out, 3); fprintf(out, "\"futex_wait_count\": %llu,\n",
-			(unsigned long long)s->futex_wait_count);
-		indent(out, 3); fprintf(out, "\"futex_avg_wait_us\": %.1f,\n", futex_avg_us);
-		indent(out, 3); fprintf(out, "\"is_anomaly\": %s,\n", is_anomaly ? "true" : "false");
-		indent(out, 3); fprintf(out, "\"subtype\": "); json_escape(out, subtype ? subtype : ""); fprintf(out, ",\n");
-		indent(out, 3); fprintf(out, "\"root_cause\": "); json_escape(out, root_cause ? root_cause : ""); fprintf(out, ",\n");
-		indent(out, 3); fprintf(out, "\"suggestion\": "); json_escape(out, suggestion ? suggestion : ""); fprintf(out, "\n");
-
-		indent(out, 2); fprintf(out, "}%s\n", i < limit - 1 ? "," : "");
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
 	}
 
-	indent(out, 1); fprintf(out, "]\n");
+	// section 2: TOP 进程指标 table
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "table", 0);
+		json_kv_str(out, 3, "title", "TOP 进程指标", 0);
+
+		// columns
+		const char *cols[] = {
+			"PID", "进程名", "CPU%", "切换/min", "主动", "被动",
+			"调度延迟(avg)", "调度延迟(max)", "迁移", "futex", "状态"
+		};
+		json_arr_begin(out, 3, "columns");
+		for (int i = 0; i < 11; i++)
+			fprintf(out, "%s\"%s\"%s", i == 0 ? "          " : "",
+				cols[i], i < 10 ? ",\n" : "\n");
+		json_indent(out, 3);
+		fprintf(out, "],\n"); // manual close for inline
+
+		// rows
+		json_arr_begin(out, 3, "rows");
+		int limit = count < 20 ? count : 20;
+		for (int i = 0; i < limit; i++) {
+			struct pid_stats *s = &procs[i].stats;
+			__u64 cpu_ns = (schedstats_on && s->cpu_runtime_ns > 0)
+				? s->cpu_runtime_ns : s->on_cpu_ns;
+			double cpu_pct = (double)cpu_ns / (double)total_interval_ns * 100.0;
+			double cswitch_pm = (s->cswitch_total > 0)
+				? (double)s->cswitch_total / ((double)total_interval_ns / 60e9) : 0;
+			double avg_delay_us;
+			if (s->wait_ns > 0 && s->wakeup_count > 0)
+				avg_delay_us = (double)s->wait_ns / (double)s->wakeup_count / 1000.0;
+			else if (s->wakeup_count > 0)
+				avg_delay_us = (double)s->total_sched_delay_ns /
+					       (double)s->wakeup_count / 1000.0;
+			else
+				avg_delay_us = 0;
+			double max_delay_us = (double)s->max_sched_delay_ns / 1000.0;
+			double vol_ratio = (s->cswitch_total > 0)
+				? (double)s->cswitch_voluntary / (double)s->cswitch_total : 0;
+
+			const char *status;
+			if (cpu_pct > cpu_threshold) {
+				if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+				    stack_concentration > STACK_CONC_RATIO)
+					status = "!! busy loop";
+				else if (s->cswitch_involuntary > s->cswitch_voluntary * 10)
+					status = "!! CPU密集";
+				else
+					status = "!! 高CPU";
+			} else if (vol_ratio > VOLUNTARY_RATIO_HIGH &&
+				   cswitch_pm > CSWITCH_WARN_PER_MIN)
+				status = "!! 锁竞争";
+			else if (avg_delay_us > SCHED_DELAY_CRIT_US)
+				status = "!! 调度延迟";
+			else
+				status = "OK";
+
+			json_indent(out, 4);
+			fprintf(out, "[\"%u\", \"%s\", \"%.1f\", \"%.0f\", \"%llu\", \"%llu\", "
+				"\"%.0fus\", \"%.0fus\", \"%llu\", \"%llu\", \"%s\"]%s\n",
+				procs[i].pid, procs[i].comm, cpu_pct, cswitch_pm,
+				s->cswitch_voluntary, s->cswitch_involuntary,
+				avg_delay_us, max_delay_us,
+				s->migrate_count, s->futex_wait_count,
+				status,
+				i < limit - 1 ? "," : "");
+		}
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 0);
+	}
+
+	// section 3: diagnosis
+	{
+		json_obj_begin_nokey(out, 2);
+		json_kv_str(out, 3, "type", "diagnosis", 0);
+		json_kv_str(out, 3, "title", "异常进程诊断分析", 0);
+		json_arr_begin(out, 3, "findings");
+
+		int diag_count = 0;
+		int limit2 = count < 20 ? count : 20;
+		for (int i = 0; i < limit2; i++) {
+			struct pid_stats *s = &procs[i].stats;
+			__u64 cpu_ns = (schedstats_on && s->cpu_runtime_ns > 0)
+				? s->cpu_runtime_ns : s->on_cpu_ns;
+			double cpu_pct = (double)cpu_ns / (double)total_interval_ns * 100.0;
+			double cswitch_pm = (s->cswitch_total > 0)
+				? (double)s->cswitch_total / ((double)total_interval_ns / 60e9) : 0;
+			double vol_ratio = (s->cswitch_total > 0)
+				? (double)s->cswitch_voluntary / (double)s->cswitch_total : 0;
+			double invol_pm = (s->cswitch_involuntary > 0)
+				? (double)s->cswitch_involuntary / ((double)total_interval_ns / 60e9) : 0;
+			double vol_pm = (s->cswitch_voluntary > 0)
+				? (double)s->cswitch_voluntary / ((double)total_interval_ns / 60e9) : 0;
+			double avg_delay_us;
+			if (s->wait_ns > 0 && s->wakeup_count > 0)
+				avg_delay_us = (double)s->wait_ns / (double)s->wakeup_count / 1000.0;
+			else if (s->wakeup_count > 0)
+				avg_delay_us = (double)s->total_sched_delay_ns /
+					       (double)s->wakeup_count / 1000.0;
+			else
+				avg_delay_us = 0;
+			double max_delay_us = (double)s->max_sched_delay_ns / 1000.0;
+			double futex_avg_us = (s->futex_wait_count > 0)
+				? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0 : 0;
+
+			int is_anomaly = 0;
+			const char *subtype = NULL;
+			const char *root_cause = NULL;
+			const char *suggestion = NULL;
+			char evidence[8][256];
+			int ev_count = 0;
+
+			if (cpu_pct > cpu_threshold) {
+				is_anomaly = 1;
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "系统负载 %.2f, RunQ 深度 %d, 阻塞 %d",
+				         sys.load1, sys.procs_running, sys.procs_blocked);
+
+				if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+				    stack_concentration > STACK_CONC_RATIO) {
+					subtype = "CPU异常占用 (busy loop)";
+					root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
+					suggestion = "perf top 定位到具体函数后检查循环退出条件；考虑添加 usleep/yield";
+				} else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+				           total_stack_samples == 0) {
+					subtype = "CPU异常占用 (疑为 busy loop)";
+					root_cause = "进程切换频率极低，疑似 busy loop；建议启用栈采样确认";
+					suggestion = "使用 --profile 启用栈采样定位热点函数；或使用 perf top 观察";
+				} else if (s->cswitch_involuntary > s->cswitch_voluntary * 10) {
+					subtype = "CPU异常占用 (CPU 密集计算)";
+					root_cause = "用户态 CPU 密集型计算致 CPU 饱和，进程长期占核被反复抢占";
+					suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
+					snprintf(evidence[ev_count++], sizeof(evidence[0]),
+					         "被动切换 %.0f/min 占主导 (主动 %.0f/min)，证实 CPU 争抢",
+					         invol_pm, vol_pm);
+					if (sys.load1 > ncpu * 1.5)
+						snprintf(evidence[ev_count++], sizeof(evidence[0]),
+						         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
+						         sys.load1, ncpu);
+				} else {
+					subtype = "CPU异常占用";
+					root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
+					suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
+				}
+			}
+
+			if (!is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
+			    cswitch_pm > CSWITCH_WARN_PER_MIN) {
+				is_anomaly = 1;
+				subtype = "线程/锁竞争";
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "RunQ 瞬时 %d, 负载 %.2f — CPU 未饱和但切换频繁",
+				         sys.procs_running, sys.load1);
+				if (s->futex_wait_count > 0) {
+					root_cause = "自愿切换占比高 + futex 等待显著，多线程锁竞争或同步等待";
+					suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式";
+					snprintf(evidence[ev_count++], sizeof(evidence[0]),
+					         "自愿切换占比 %.0f%% (%.0f/min)，futex 等待 %llu 次/avg %.0fus",
+					         vol_ratio * 100, vol_pm,
+					         s->futex_wait_count, futex_avg_us);
+				} else {
+					root_cause = "自愿切换占比高，疑似锁等待或 I/O 阻塞";
+					suggestion = "使用 off-CPU 火焰图分析阻塞原因；考虑 strace 观察系统调用模式";
+					snprintf(evidence[ev_count++], sizeof(evidence[0]),
+					         "自愿切换占比 %.0f%% (%.0f/min)，总切换 %.0f/min",
+					         vol_ratio * 100, vol_pm, cswitch_pm);
+				}
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "CPU 占用仅 %.1f%%，排除纯计算热点，指向等待/阻塞模式", cpu_pct);
+			}
+
+			if (avg_delay_us > SCHED_DELAY_CRIT_US) {
+				if (!is_anomaly) {
+					is_anomaly = 1;
+					subtype = "调度延迟异常";
+				}
+				if (!root_cause)
+					root_cause = "调度延迟显著偏高，CPU 资源竞争或 run queue 拥堵";
+				if (!suggestion)
+					suggestion = "检查 run queue 深度和 CPU 负载；考虑增加 CPU 资源或调整进程优先级";
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "平均调度延迟 %.0fus 超过严重阈值 %dus",
+				         avg_delay_us, SCHED_DELAY_CRIT_US);
+			} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
+				if (!is_anomaly) {
+					is_anomaly = 1;
+					subtype = "调度延迟偏高";
+					root_cause = "CPU 负载较高致调度延迟升高";
+					suggestion = "监控 run queue 深度变化趋势";
+				}
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "平均调度延迟 %.0fus 超过警告阈值 %dus",
+				         avg_delay_us, SCHED_DELAY_WARN_US);
+			}
+
+			if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !is_anomaly) {
+				is_anomaly = 1;
+				subtype = "上下文切换风暴";
+				root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
+				suggestion = "检查线程池大小；排查不必要的 wakeup；使用 off-CPU 分析定位阻塞源";
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "上下文切换 %.0f/min 达风暴级别 (>%d/min)",
+				         cswitch_pm, CSWITCH_CRIT_PER_MIN);
+			}
+
+			if (s->migrate_count > (unsigned long long)cswitch_pm / 2 &&
+			    s->migrate_count > 100) {
+				if (!is_anomaly) {
+					is_anomaly = 1;
+					if (!subtype) subtype = "核间迁移异常";
+				}
+				snprintf(evidence[ev_count++], sizeof(evidence[0]),
+				         "核间迁移 %llu 次，占比过高，放大调度开销", s->migrate_count);
+				if (!suggestion)
+					suggestion = "检查 CPU affinity 设置；考虑 taskset/cpuset 绑定关键进程";
+			}
+
+			// 跳过非异常且 CPU<50% 的进程
+			if (!is_anomaly && cpu_pct < 50.0) continue;
+
+			if (diag_count > 0) fprintf(out, ",\n");
+			json_indent(out, 4);
+			fprintf(out, "{\n");
+			snprintf(buf, sizeof(buf), "%s(%u)", procs[i].comm, procs[i].pid);
+			json_kv_str(out, 5, "target", buf, 0);
+			json_kv_bool(out, 5, "is_anomaly", is_anomaly, 0);
+			json_kv_str(out, 5, "subtype", subtype ? subtype : "", 0);
+			json_kv_str(out, 5, "root_cause", root_cause ? root_cause : "", 0);
+			json_kv_str(out, 5, "suggestion", suggestion ? suggestion : "", 0);
+
+			snprintf(buf, sizeof(buf), "%s +%.0fs", ts, duration_s);
+			json_kv_str(out, 5, "time_window", buf, 0);
+
+			// key_metrics
+			json_obj_begin(out, 5, "key_metrics");
+			snprintf(buf, sizeof(buf), "%.1f%%", cpu_pct);
+			json_kv_str(out, 6, "CPU 占用", buf, 0);
+			snprintf(buf, sizeof(buf), "%.0f/min (主动: %llu, 被动: %llu)",
+				 cswitch_pm, s->cswitch_voluntary, s->cswitch_involuntary);
+			json_kv_str(out, 6, "上下文切换", buf, 0);
+			snprintf(buf, sizeof(buf), "%.0f%%", vol_ratio * 100.0);
+			json_kv_str(out, 6, "主动切换占比", buf, 0);
+			snprintf(buf, sizeof(buf), "%.1fus / %.1fus", avg_delay_us, max_delay_us);
+			json_kv_str(out, 6, "调度延迟 (avg/max)", buf, 0);
+			snprintf(buf, sizeof(buf), "%llu 次", s->wakeup_count);
+			json_kv_str(out, 6, "唤醒次数", buf, 0);
+			if (s->wait_ns > 0 || s->sleep_ns > 0 || s->blocked_ns > 0) {
+				if (s->wait_ns > 0) {
+					snprintf(buf, sizeof(buf), "%.1f ms", (double)s->wait_ns / 1e6);
+					json_kv_str(out, 6, "等待 (runq)", buf, 0);
+				}
+				if (s->sleep_ns > 0) {
+					snprintf(buf, sizeof(buf), "%.1f ms", (double)s->sleep_ns / 1e6);
+					json_kv_str(out, 6, "睡眠", buf, 0);
+				}
+				if (s->blocked_ns > 0) {
+					snprintf(buf, sizeof(buf), "%.1f ms", (double)s->blocked_ns / 1e6);
+					json_kv_str(out, 6, "阻塞 (I/O等)", buf, 0);
+				}
+			}
+			snprintf(buf, sizeof(buf), "%llu 次", s->migrate_count);
+			json_kv_str(out, 6, "核间迁移", buf, 0);
+			if (s->futex_wait_count > 0) {
+				snprintf(buf, sizeof(buf), "%llu 次, avg %.0fus",
+					 s->futex_wait_count, futex_avg_us);
+				json_kv_str(out, 6, "futex 等待", buf, 1);
+			} else {
+				json_kv_str(out, 6, "futex 等待", "无", 1);
+			}
+			json_obj_end(out, 5, 0);
+
+			// evidence
+			json_arr_begin(out, 5, "evidence");
+			for (int e = 0; e < ev_count; e++) {
+				json_indent(out, 6);
+				json_str(out, evidence[e]);
+				fprintf(out, "%s\n", e < ev_count - 1 ? "," : "");
+			}
+			json_arr_end(out, 5, 1);
+
+			diag_count++;
+			json_obj_end(out, 4, 1);
+		}
+
+		// Close findings — need to remove the trailing comma from last finding
+		// We'll handle this with a dummy close approach: the last finding has last=1
+		// but we already wrote it with last=0. This is a cosmetic JSON issue fix:
+		// We write findings array close manually below.
+		json_arr_end(out, 3, 1);
+		json_obj_end(out, 2, 1);
+	}
+
+	json_arr_end(out, 1, 1);
 	fprintf(out, "}\n");
-	fclose(out);
+	json_close(out);
 	fprintf(stderr, "[*] JSON 报告已写入 %s\n", path);
 }
 
@@ -901,35 +993,40 @@ static void usage(const char *prog)
 		"检测异常进程并输出结构化诊断报告。\n"
 		"\n"
 		"选项:\n"
-		"  -i <秒>           采样间隔（默认: %d）\n"
-		"  -d <秒>           总运行时长，0 表示持续运行（默认: 0）\n"
-		"  -o <文件路径>     输出到文件（默认: 标准输出）\n"
-		"  -p <Hz>           栈采样频率，需要 root（默认: %d, 0=禁用）\n"
-		"  -s, --schedstats  尝试开启内核调度器详细统计 (sched_schedstats)\n"
-		"  --cpu-threshold <%%> CPU 占用异常阈值，百分比（默认: %.0f）\n"
-		"  -j, --json         额外写入 report.json（带缩进），可供 Python 解析\n"
-		"  -h, --help        显示本帮助信息\n"
+		"  -i, --interval <秒>      采样间隔（默认: %d）\n"
+		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
+		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
+		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
+		"  -s, --schedstats         尝试开启内核调度器详细统计 (sched_schedstats)\n"
+		"  --cpu-threshold <%%>      CPU 占用异常阈值，百分比（默认: %.0f）\n"
+		"  -j, --json               输出 JSON + Markdown 报告到 report/ 目录\n"
+		"  -h, --help               显示本帮助信息\n"
 		"\n"
 		"示例:\n"
 		"  sudo %s                                # 默认参数运行\n"
 		"  sudo %s -i 3 -d 60                     # 每 3 秒采样，运行 60 秒\n"
 		"  sudo %s -p 99 -o /tmp/report.txt       # 启用栈采样，输出到文件\n"
 		"  sudo %s --cpu-threshold 80             # CPU 占用超过 80%% 即视为异常\n"
-		"  sudo %s -j --schedstats                # JSON 额外输出到 report.json\n",
-		prog, DEFAULT_INTERVAL, DEFAULT_PROFILE_HZ, DEFAULT_CPU_THRESHOLD,
+		"  sudo %s -s                             # 尝试启用内核调度器详细统计\n",
+		prog, g_cfg.interval, g_cfg.cpu_profile_hz, g_cfg.cpu_threshold,
 		prog, prog, prog, prog, prog);
 }
 
-// ─── run_cpu ─────────────────────────────────────────────────────
+// run_cpu
 int run_cpu(int argc, char **argv)
 {
-	int   interval       = DEFAULT_INTERVAL;
+	int   interval       = g_cfg.interval;
 	int   duration       = 0;
-	int   profile_hz     = DEFAULT_PROFILE_HZ;
-	double cpu_threshold = DEFAULT_CPU_THRESHOLD;
+	int   profile_hz     = g_cfg.cpu_profile_hz;
+	int   json_output    = 0;
+	double cpu_threshold = g_cfg.cpu_threshold;
 	const char *output_file = NULL;
 
 	static struct option long_opts[] = {
+		{"interval",      required_argument, 0, 'i'},
+		{"duration",      required_argument, 0, 'd'},
+		{"output",        required_argument, 0, 'o'},
+		{"profile",       required_argument, 0, 'p'},
 		{"cpu-threshold", required_argument, 0, 'c'},
 		{"schedstats",    no_argument,       0, 's'},
 		{"json",          no_argument,       0, 'j'},
@@ -939,31 +1036,26 @@ int run_cpu(int argc, char **argv)
 
 	int opt;
 	int enable_schedstats = 0;
-	int json_mode = 0;
-	while ((opt = getopt_long(argc, argv, "i:d:o:p:shj", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "i:d:o:p:sjh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'i': interval = atoi(optarg); break;
 		case 'd': duration = atoi(optarg); break;
 		case 'o': output_file = optarg; break;
 		case 'p': profile_hz = atoi(optarg); break;
 		case 's': enable_schedstats = 1; break;
-		case 'j': json_mode = 1; break;
+		case 'j': json_output = 1; break;
 		case 'c': cpu_threshold = atof(optarg); break;
 		case 'h': usage(argv[0]); return 0;
 		default:  usage(argv[0]); return 1;
 		}
 	}
 
-	if (interval < 1) {
-		fprintf(stderr, "采样间隔必须 >= 1\n");
+	if (check_interval(interval) != 0)
 		return 1;
-	}
 
-	FILE *out = stdout;
-	if (output_file) {
-		out = fopen(output_file, "w");
-		if (!out) { perror("fopen"); return 1; }
-	}
+	FILE *out = open_output(output_file);
+	if (!out)
+		return 1;
 
 	int ncpu = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 1) ncpu = 1;
@@ -1108,27 +1200,22 @@ int run_cpu(int argc, char **argv)
 		             sched_name, preempt_model, schedstats_on);
 
 
-	if (json_mode) {
+	if (json_output) {
 		print_json_report(procs, count, interval_ns,
-				  ncpu, cpu_threshold,
-				  stacks, stack_count, total_stack_samples,
-				  schedstats_on);
+			  ncpu, cpu_threshold,
+			  stacks, stack_count, total_stack_samples,
+			  schedstats_on, sched_name, preempt_model,
+			  stackmap_fd);
+		json_to_markdown("report/cpu.json", "report/cpu.md");
 	}
-
-	/* 默认输出 Markdown 报告到 report/ 目录 */
-	print_markdown_report(NULL, procs, count, interval_ns,
-			      ncpu, cpu_threshold,
-			      stacks, stack_count, total_stack_samples,
-			      stackmap_fd,
-			      sched_name, preempt_model, schedstats_on);
 
 		free(procs);
 		free(stacks);
 
 		// 重置统计
-		reset_pid_stats(stats_fd);
+		reset_map(stats_fd);
 		if (profile_enabled)
-			reset_stack_counts(scounts_fd);
+			reset_map(scounts_fd);
 
 		if (duration > 0 && time(NULL) - start >= duration)
 			break;

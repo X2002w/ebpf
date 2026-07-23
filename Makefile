@@ -64,4 +64,72 @@ $(APP): $(USER_OBJS)
 	$(CLANG) $(CFLAGS_USER) $^ $(LDLIBS) -o $@
 
 clean:
-	rm -rf $(BUILD_DIR) $(APP) 
+	rm -rf $(BUILD_DIR) $(APP)
+
+# install 目标 — 安装二进制、配置、AI 诊断脚本
+PREFIX    ?= /usr/local
+BINDIR    ?= $(DESTDIR)$(PREFIX)/bin
+SYSCONFDIR ?= $(DESTDIR)/etc
+DATADIR   ?= $(DESTDIR)$(PREFIX)/share/eebpf
+
+.PHONY: install install-bin install-conf install-ai
+install: install-bin install-conf install-ai
+	@if [ -n "$$SUDO_USER" ]; then \
+		su "$$SUDO_USER" -c '$(MAKE) install-user'; \
+	else \
+		$(MAKE) install-user; \
+	fi
+
+install-bin: $(APP)
+	install -d $(BINDIR)
+	install -m 755 $(APP) $(BINDIR)/$(APP)
+	install -m 755 eebpf-ai $(BINDIR)/eebpf-ai
+
+install-conf:
+	install -d $(SYSCONFDIR)
+	if [ ! -f $(SYSCONFDIR)/eebpf.conf ]; then \
+		install -m 644 eebpf.conf $(SYSCONFDIR)/eebpf.conf; \
+	fi
+
+install-ai:
+	install -d $(DATADIR)/ai_analysis
+	install -m 644 ai_analysis/caller.py $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/sys_message.py $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/api_config.json $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/system_prompt.md $(DATADIR)/ai_analysis/
+	install -m 644 requirements.txt $(DATADIR)/ai_analysis/requirements.txt
+
+# install-user 将可编辑的配置文件安装到用户家目录 (无需 root)
+USER_EEBPF := $(HOME)/.eebpf
+
+.PHONY: install-user
+install-user:
+	install -d $(USER_EEBPF)
+	if [ ! -f $(USER_EEBPF)/eebpf.conf ]; then \
+		install -m 644 eebpf.conf $(USER_EEBPF)/eebpf.conf; \
+	fi
+	install -d $(USER_EEBPF)/ai_analysis
+	install -m 644 ai_analysis/api_config.json $(USER_EEBPF)/ai_analysis/
+	install -m 644 ai_analysis/system_prompt.md $(USER_EEBPF)/ai_analysis/
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(BINDIR)/$(APP) $(BINDIR)/eebpf-ai
+	rm -f $(SYSCONFDIR)/eebpf.conf
+	rm -rf $(DATADIR)
+
+# deb 目标 — 构建 .deb 安装包
+DEB_STAGING := $(BUILD_DIR)/deb-staging
+DEB_ARCH    := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
+DEB_VERSION := $(or $(VERSION),$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'),1.0.0)
+DEB_NAME    := eebpf_$(DEB_VERSION)_$(DEB_ARCH).deb
+
+.PHONY: deb
+deb: $(APP)
+	rm -rf $(DEB_STAGING)
+	$(MAKE) install-bin install-conf install-ai DESTDIR=$(DEB_STAGING) PREFIX=/usr
+	install -d $(DEB_STAGING)/DEBIAN
+	sed -e 's/@VERSION@/$(DEB_VERSION)/' -e 's/@ARCH@/$(DEB_ARCH)/' \
+		packaging/DEBIAN/control.in > $(DEB_STAGING)/DEBIAN/control
+	dpkg-deb --root-owner-group --build $(DEB_STAGING) $(DEB_NAME)
+	@echo "  => $(DEB_NAME)"
