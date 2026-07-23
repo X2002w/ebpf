@@ -113,7 +113,7 @@ echo "sk-your-key" > ai_analysis/api.txt          # 本地测试，gitignore 保
 
 API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt` > `ai_analysis/api_config.json` > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
 
-### 1.7 配置文件
+### 1.8 运行配置文件
 
 eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令行指定。
 
@@ -163,6 +163,44 @@ lock_futex_crit_us = 20000
 ```
 
 命令行参数优先级高于配置文件。例如 `./eebpf cpu -i 3` 会忽略配置文件中的 `interval`，使用 3 秒间隔。
+
+### 1.9 AI 配置文件
+
+AI 诊断模块使用三个配置文件，均支持多路径查找（`./` > `~/.eebpf/` > 安装目录）。
+
+#### api_config.json
+
+JSON 格式，配置 API 后端连接参数：
+
+```json
+{
+    "api_key": "sk-xxxxxxxx",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro"
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `api_key` | string | API 密钥（支持任意兼容 OpenAI 接口的后端） |
+| `base_url` | string | API 端点地址 |
+| `model` | string | 模型名称 |
+
+#### api.txt
+
+纯文本格式，仅写入 API key（优先级高于 `api_config.json` 中的 `api_key`）：
+
+```
+sk-your-api-key-here
+```
+
+#### system_prompt.md
+
+Markdown 格式，自定义发送给大模型的系统提示词。`caller.py` 启动时自动加载，若文件不存在则使用内置简化版。可直接编辑此文件调整：
+- 报告输出语言和风格
+- 追加特定分析维度（如网络、GPU）
+- 修改根因推断的侧重点
+- 添加领域特定的诊断规则
 
 ---
 
