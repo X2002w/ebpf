@@ -1,0 +1,108 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  build-amd64:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/x2002w/eebpf-build:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+      volumes:
+        - /sys/kernel/btf:/sys/kernel/btf:ro
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 构建二进制
+        run: make -j$(nproc)
+
+      - name: 打包 deb
+        run: |
+          apt-get update && apt-get install -y --no-install-recommends dpkg-dev
+          make deb
+
+      - name: 安装并验证
+        run: |
+          apt-get install -y --no-install-recommends ./eebpf_*.deb
+          eebpf --version
+          eebpf-ai --help
+          eebpf cpu  -i 1 -d 1 -j
+          eebpf mem  -i 1 -d 1 -j
+          eebpf io   -i 1 -d 1 -j
+          eebpf hot  -i 1 -d 1 -j
+          eebpf lock -i 1 -d 1 -p 0 -j
+
+      - name: 上传 deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: eebpf-amd64
+          path: eebpf_*.deb
+
+  build-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
+          sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
+          sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
+
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          sudo make -C /tmp/bpftool/src install
+
+      - name: 构建二进制
+        run: make -j$(nproc)
+
+      - name: 打包 deb
+        run: make deb
+
+      - name: 安装并验证
+        run: |
+          sudo apt-get install -y --no-install-recommends ./eebpf_*.deb
+          eebpf --version
+          eebpf-ai --help
+          sudo eebpf cpu  -i 1 -d 1 -j
+          sudo eebpf mem  -i 1 -d 1 -j
+          sudo eebpf io   -i 1 -d 1 -j
+          sudo eebpf hot  -i 1 -d 1 -j
+          sudo eebpf lock -i 1 -d 1 -p 0 -j
+
+      - name: 上传 deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: eebpf-arm64
+          path: eebpf_*.deb
+
+  release:
+    needs: [build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: eebpf-*
+          merge-multiple: true
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: eebpf_*.deb
+          generate_release_notes: true
