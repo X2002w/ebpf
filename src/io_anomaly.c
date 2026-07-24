@@ -291,9 +291,10 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
     // 读取内核支持的最大io处理积压深度
     int kernel_dqpth_max = 0;
     FILE *f = fopen("/sys/block/sda/queue/nr_requests", "r");
-    if (f)
+    if (f) {
       fscanf(f, "%d", &kernel_dqpth_max);
-    fclose(f);
+      fclose(f);
+    }
 
 		fprintf(out,
 			"──────────────────────────────────────────────────────────────────────\n"
