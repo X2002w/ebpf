@@ -11,7 +11,9 @@ VERSION  := $(or $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v/
 CFLAGS_COMMON := -Wall -Isrc -Iinclude -Ibuild -DVERSION=\"$(VERSION)\"
 CFLAGS_USER := $(CFLAGS_COMMON) -g -O2 -MMD -MP
 CFLAGS_BPF := $(CFLAGS_COMMON) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH)
-LDLIBS   := -lbpf -lelf -lz
+LDLIBS   := -lbpf -lelf -lz -lpthread -ldl
+SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
+	-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_OMIT_DEPRECATED
 
 BUILD_DIR := build
 
@@ -27,6 +29,7 @@ ALL_SRCS := $(wildcard src/*.c)
 
 # 过滤bpf源文件
 USER_SRCS := $(filter-out src/%.bpf.c, $(ALL_SRCS))
+USER_SRCS := $(filter-out src/sqlite3.c, $(USER_SRCS))
 USER_OBJS := $(USER_SRCS:src/%.c=build/%.o)
 
 .PHONY: all clean
@@ -46,6 +49,9 @@ $(BUILD_DIR)/%.skel.h: $(BUILD_DIR)/%.bpf.o
 $(BUILD_DIR)/%.o: src/%.c $(SKEL_HDRS) | $(BUILD_DIR)
 	$(CLANG) $(CFLAGS_USER) -c $< -o $@
 
+$(BUILD_DIR)/sqlite3.o: src/sqlite3.c | $(BUILD_DIR)
+	$(CLANG) -c $(SQLITE_FLAGS) -O2 $< -o $@
+
 -include $(USER_OBJS:.o=.d)
 
 $(BUILD_DIR)/vmlinux.h: /sys/kernel/btf/vmlinux | $(BUILD_DIR) 
@@ -62,7 +68,7 @@ $(BUILD_DIR)/vmlinux.h: /sys/kernel/btf/vmlinux | $(BUILD_DIR)
 	fi
 	@mv $@.tmp $@
 
-$(APP): $(USER_OBJS) 
+$(APP): $(USER_OBJS) build/sqlite3.o
 	$(CLANG) $(CFLAGS_USER) $^ $(LDLIBS) -o $@
 
 clean:
