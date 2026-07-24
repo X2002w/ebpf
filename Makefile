@@ -6,7 +6,9 @@ BPFTOOL ?= $(or $(wildcard /usr/local/sbin/bpftool),$(wildcard /usr/sbin/bpftool
 ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/' -e 's/riscv64/riscv/')
 
 APP      := eebpf
-CFLAGS_COMMON := -Wall -Isrc -Iinclude -Ibuild
+VERSION  := $(or $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'),0.2.0)
+
+CFLAGS_COMMON := -Wall -Isrc -Iinclude -Ibuild -DVERSION=\"$(VERSION)\"
 CFLAGS_USER := $(CFLAGS_COMMON) -g -O2 -MMD -MP
 CFLAGS_BPF := $(CFLAGS_COMMON) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH)
 LDLIBS   := -lbpf -lelf -lz

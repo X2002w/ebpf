@@ -20,7 +20,6 @@
 #include "../include/syscall_anomaly.h"
 #include "../include/config.h"
 
-#define VERSION "0.2.0-dev"
 
 // 模块注册表 
 typedef struct {
