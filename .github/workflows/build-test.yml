@@ -2,8 +2,9 @@ name: Project Build Test
 
 on:
   push:
-    branches: 
+    branches:
       - master
+      - feat/sqlite-correlate
     paths:
       - src/**
       - include/**
