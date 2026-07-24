@@ -107,10 +107,21 @@ jobs:
     needs: [build-amd64, build-arm64]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           pattern: eebpf-*
           merge-multiple: true
+
+      - name: 准备发布说明
+        run: |
+          NOTES="docs/release-notes/${{ github.ref_name }}.md"
+          if [ ! -f "$NOTES" ]; then
+            echo "[!] 未找到 $NOTES，生成默认说明"
+            mkdir -p docs/release-notes
+            echo "详见下方 Full Changelog。" > "$NOTES"
+          fi
 
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
