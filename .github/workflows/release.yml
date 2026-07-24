@@ -117,3 +117,4 @@ jobs:
         with:
           files: eebpf_*.deb
           generate_release_notes: true
+          body_path: docs/release-notes/${{ github.ref_name }}.md
