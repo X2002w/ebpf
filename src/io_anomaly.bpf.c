@@ -8,7 +8,7 @@
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // cmd_flags mark
-#define CMD_FLAGS_MAEK 0xFF
+#define CMD_FLAGS_MARK 0xFF
 #define HIST_SLOTS 16
 #define CACHE_WINDOW_NS 500000000ULL  // 500ms 同块重复读判定窗口
 
@@ -142,7 +142,7 @@ int on_block_rq_insert(struct bpf_raw_tracepoint_args *ctx)
 
   // cmd_flags[24标志位 | 8操作码]
   unsigned int cmd_flags = BPF_CORE_READ(rq, cmd_flags); 
-  __u8 rw = ((cmd_flags & CMD_FLAGS_MAEK) == 1) ? 1 : 0;
+  __u8 rw = ((cmd_flags & CMD_FLAGS_MARK) == 1) ? 1 : 0;
 
   struct io_req_info info = {};
   info.insert_ts = bpf_ktime_get_ns();

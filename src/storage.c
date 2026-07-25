@@ -194,10 +194,10 @@ static int parse_findings_from_file(FILE *f, finding_t *out, int max)
 			if (v) snprintf(out[count].subtype, STORAGE_MAX_STR, "%s", v);
 		} else if (strstr(buf, "\"root_cause\":")) {
 			const char *v = json_val(buf, "root_cause");
-			if (v) snprintf(out[count].root_cause, STORAGE_MAX_STR * 4, "%s", v);
+			if (v) snprintf(out[count].root_cause, STORAGE_MAX_LONG_STR, "%s", v);
 		} else if (strstr(buf, "\"suggestion\":")) {
 			const char *v = json_val(buf, "suggestion");
-			if (v) snprintf(out[count].suggestion, STORAGE_MAX_STR * 4, "%s", v);
+			if (v) snprintf(out[count].suggestion, STORAGE_MAX_LONG_STR, "%s", v);
 		} else if (strstr(buf, "\"time_window\":")) {
 			const char *v = json_val(buf, "time_window");
 			if (v) snprintf(out[count].time_window, STORAGE_MAX_STR, "%s", v);
@@ -552,8 +552,8 @@ int storage_get_recent_findings(const char *module, double within_sec,
 		snprintf(fd->target, STORAGE_MAX_STR, "%s", sqlite3_column_text(s, 0));
 		fd->is_anomaly = sqlite3_column_int(s, 1);
 		snprintf(fd->subtype, STORAGE_MAX_STR, "%s", sqlite3_column_text(s, 2));
-		snprintf(fd->root_cause, STORAGE_MAX_STR * 4, "%s", sqlite3_column_text(s, 3));
-		snprintf(fd->suggestion, STORAGE_MAX_STR * 4, "%s", sqlite3_column_text(s, 4));
+		snprintf(fd->root_cause, STORAGE_MAX_LONG_STR, "%s", sqlite3_column_text(s, 3));
+		snprintf(fd->suggestion, STORAGE_MAX_LONG_STR, "%s", sqlite3_column_text(s, 4));
 		snprintf(fd->time_window, STORAGE_MAX_STR, "%s", sqlite3_column_text(s, 5));
 		snprintf(fd->timestamp, sizeof(fd->timestamp), "%s", sqlite3_column_text(s, 8));
 		const char *km_json = (const char*)sqlite3_column_text(s, 6);

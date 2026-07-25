@@ -9,6 +9,7 @@
 
 // 诊断 finding（对应 JSON findings[] 元素的 8 字段）
 #define STORAGE_MAX_STR     256
+#define STORAGE_MAX_LONG_STR (STORAGE_MAX_STR * 4)   // root_cause/suggestion 等长文本字段
 #define STORAGE_MAX_METRICS 16
 #define STORAGE_MAX_EVIDENCE 8
 
@@ -16,8 +17,8 @@ typedef struct {
 	char target[STORAGE_MAX_STR];
 	int  is_anomaly;
 	char subtype[STORAGE_MAX_STR];
-	char root_cause[STORAGE_MAX_STR * 4];
-	char suggestion[STORAGE_MAX_STR * 4];
+	char root_cause[STORAGE_MAX_LONG_STR];
+	char suggestion[STORAGE_MAX_LONG_STR];
 	char time_window[STORAGE_MAX_STR];
 	char timestamp[64];
 	struct {

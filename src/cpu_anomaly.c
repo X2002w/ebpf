@@ -223,6 +223,7 @@ static void check_scheduler_info(struct cpu_anomaly_bpf *skel,
   __u32 zero = 0;
   __u64 fair_count = 0;
   bpf_map_lookup_elem(bpf_map__fd(skel->maps.sched_class_check), &zero, &fair_count);
+  fprintf(stderr, "[*] fair_sched_class 调用计数: %llu\n", fair_count);
 }
 
 // 输出一条调用栈链路
@@ -915,9 +916,9 @@ static void print_json_report(struct proc_info *procs, int count,
 			// 跳过非异常且 CPU<50% 的进程
 			if (!is_anomaly && cpu_pct < 50.0) continue;
 
+			// finding 之间用前置逗号分隔 (避免尾逗号)
 			if (diag_count > 0) fprintf(out, ",\n");
-			json_indent(out, 4);
-			fprintf(out, "{\n");
+			json_obj_begin_nokey(out, 4);
 			snprintf(buf, sizeof(buf), "%s(%u)", procs[i].comm, procs[i].pid);
 			json_kv_str(out, 5, "target", buf, 0);
 			json_kv_bool(out, 5, "is_anomaly", is_anomaly, 0);
@@ -979,10 +980,6 @@ static void print_json_report(struct proc_info *procs, int count,
 			json_obj_end(out, 4, 1);
 		}
 
-		// Close findings — need to remove the trailing comma from last finding
-		// We'll handle this with a dummy close approach: the last finding has last=1
-		// but we already wrote it with last=0. This is a cosmetic JSON issue fix:
-		// We write findings array close manually below.
 		json_arr_end(out, 3, 1);
 		json_obj_end(out, 2, 1);
 	}
@@ -1210,15 +1207,15 @@ int run_cpu(int argc, char **argv)
 		             sched_name, preempt_model, schedstats_on);
 
 
-	if (json_output) {
-		print_json_report(procs, count, interval_ns,
-			  ncpu, cpu_threshold,
-			  stacks, stack_count, total_stack_samples,
-			  schedstats_on, sched_name, preempt_model,
-			  stackmap_fd);
-		json_to_markdown("report/cpu.json", "report/cpu.md");
-		storage_save_from_json("cpu", "report/cpu.json");
-	}
+		if (json_output) {
+			print_json_report(procs, count, interval_ns,
+			                  ncpu, cpu_threshold,
+			                  stacks, stack_count, total_stack_samples,
+			                  schedstats_on, sched_name, preempt_model,
+			                  stackmap_fd);
+			json_to_markdown("report/cpu.json", "report/cpu.md");
+			storage_save_from_json("cpu", "report/cpu.json");
+		}
 
 		free(procs);
 		free(stacks);

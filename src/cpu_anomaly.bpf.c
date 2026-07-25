@@ -187,9 +187,10 @@ int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 	return 0;
 }
 
-// ─── sched_wakeup ─────────────────────────────────────────────────
-SEC("tp/sched/sched_wakeup")
-int on_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
+// ─── sched_wakeup / sched_wakeup_new 共用逻辑 ────────────────────
+// wakeup_new 对应新进程首次唤醒, PID 必然不存在于 map, 走初始化分支
+// wakeup 对应已存在进程被唤醒, 走递增分支
+static __always_inline int handle_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
 {
 	__u32 pid = ctx->pid;
 	if (pid == 0)
@@ -210,22 +211,16 @@ int on_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
 	return 0;
 }
 
-// ─── sched_wakeup_new ─────────────────────────────────────────────
+SEC("tp/sched/sched_wakeup")
+int on_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
+{
+	return handle_sched_wakeup(ctx);
+}
+
 SEC("tp/sched/sched_wakeup_new")
 int on_sched_wakeup_new(struct trace_event_raw_sched_wakeup_template *ctx)
 {
-	__u32 pid = ctx->pid;
-	if (pid == 0)
-		return 0;
-
-	__u64 now = bpf_ktime_get_ns();
-	bpf_map_update_elem(&wakeup_ts, &pid, &now, BPF_ANY);
-
-	struct pid_stats ns = {};
-	ns.wakeup_count = 1;
-	bpf_map_update_elem(&pid_stats, &pid, &ns, BPF_ANY);
-
-	return 0;
+	return handle_sched_wakeup(ctx);
 }
 
 // ─── sched_stat_wait: 内核直接给出的 runqueue 等待时间 ──────────────
