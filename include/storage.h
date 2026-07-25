@@ -49,5 +49,6 @@ int storage_parse_findings_json(const char *json_path, finding_t *out, int max);
 int storage_get_recent_findings(const char *module, double within_sec, finding_t *out, int max);
 int storage_get_timeline(const char *module, int limit, timeline_entry_t *out, int max);
 int storage_exec_sql(const char *sql);
+int storage_clear(const char *module);
 
 #endif

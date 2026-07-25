@@ -1,6 +1,7 @@
 // history.c — 历史趋势查询
 // 用法: eebpf history <module> [--limit N] [-j]
 //       eebpf history --sql "SELECT ..."
+//       eebpf history --clear [module]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,6 +16,7 @@ static void print_usage(void)
 {
 	fprintf(stderr, "用法: %s history <cpu|io|mem|lock|hot> [--limit N] [-j]\n", prog);
 	fprintf(stderr, "      %s history --sql \"SELECT ...\"\n", prog);
+	fprintf(stderr, "      %s history --clear [模块名]\n", prog);
 }
 
 static void print_timeline_text(const char *module, int limit)
@@ -57,21 +59,23 @@ static void print_json_output(const char *module, int limit)
 int run_history(int argc, char **argv)
 {
 	prog = "eebpf";
-	int json_output = 0, limit = 20;
+	int json_output = 0, limit = 20, clear = 0;
 	char *sql = NULL;
 
 	static struct option long_opts[] = {
 		{"limit", required_argument, NULL, 'n'},
 		{"sql",   required_argument, NULL, 'q'},
+		{"clear", no_argument,       NULL, 'c'},
 		{"help",  no_argument,       NULL, 'h'},
 		{0, 0, 0, 0},
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "n:q:jh", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "n:q:cjh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'n': limit = atoi(optarg); break;
 		case 'q': sql = optarg; break;
+		case 'c': clear = 1; break;
 		case 'j': json_output = 1; break;
 		case 'h': print_usage(); return 0;
 		default:  print_usage(); return 1;
@@ -85,6 +89,9 @@ int run_history(int argc, char **argv)
 
 	if (sql)
 		return storage_exec_sql(sql) >= 0 ? 0 : 1;
+
+	if (clear)
+		return storage_clear(optind < argc ? argv[optind] : NULL);
 
 	if (optind >= argc) {
 		fprintf(stderr, "eebpf history: 缺少模块名\n");

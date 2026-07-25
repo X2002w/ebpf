@@ -639,3 +639,42 @@ int storage_exec_sql(const char *sql)
 	return nrow;
 }
 
+int storage_clear(const char *module)
+{
+	if (!g_db) {
+		fprintf(stderr, "数据库未打开\n");
+		return -1;
+	}
+
+	if (module) {
+		char sql[256];
+		snprintf(sql, sizeof(sql),
+			"DELETE FROM findings WHERE module='%s';"
+			"DELETE FROM snapshots WHERE module='%s';"
+			"DELETE FROM reports WHERE module='%s';",
+			module, module, module);
+		char *err = NULL;
+		int rc = sqlite3_exec(g_db, sql, NULL, NULL, &err);
+		if (rc != SQLITE_OK) {
+			fprintf(stderr, "清除失败: %s\n", err);
+			sqlite3_free(err);
+			return -1;
+		}
+		printf("已清除 %s 模块数据\n", module);
+	} else {
+		char *err = NULL;
+		int rc = sqlite3_exec(g_db,
+			"DELETE FROM findings;"
+			"DELETE FROM snapshots;"
+			"DELETE FROM reports;",
+			NULL, NULL, &err);
+		if (rc != SQLITE_OK) {
+			fprintf(stderr, "清除失败: %s\n", err);
+			sqlite3_free(err);
+			return -1;
+		}
+		printf("已清除全部数据\n");
+	}
+	return 0;
+}
+
