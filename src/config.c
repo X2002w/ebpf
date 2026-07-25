@@ -28,6 +28,7 @@ static void set_defaults(void)
 	g_cfg.hot_freq_per_sec   = 10000;
 	g_cfg.hot_lat_us         = 10000;
 	g_cfg.hot_err_rate       = 0.1;
+	g_cfg.storage_enabled    = 0;
 }
 
 eebpf_config g_cfg;
@@ -99,6 +100,8 @@ static void apply_value(const char *key, const char *val)
 		g_cfg.hot_lat_us = atoi(val);
 	else if (strcmp(key, "hot_err_rate") == 0)
 		g_cfg.hot_err_rate = atof(val);
+	else if (strcmp(key, "storage_enabled") == 0)
+		g_cfg.storage_enabled = atoi(val);
 }
 
 static void try_load(const char *path)

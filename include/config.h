@@ -34,6 +34,9 @@ typedef struct {
 	int hot_freq_per_sec;
 	int hot_lat_us;
 	double hot_err_rate;
+
+	// 存储
+	int storage_enabled;
 } eebpf_config;
 
 extern eebpf_config g_cfg;

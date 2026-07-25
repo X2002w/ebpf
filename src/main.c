@@ -19,6 +19,7 @@
 #include "../include/lock_anomaly.h"
 #include "../include/syscall_anomaly.h"
 #include "../include/config.h"
+#include "../include/storage.h"
 
 
 // 模块注册表 
@@ -33,7 +34,9 @@ static module_t modules[] = {
 	{"io",   "I/O 异常检测",            run_io},
 	{"mem",  "内存异常检测",            run_mem},
 	{"lock", "锁竞争检测",            run_lock},
-	{"hot",  "系统调用热点分析", run_syscall},
+	{"hot",       "系统调用热点分析",         run_syscall},
+	{"history",   "历史趋势查询",              NULL},
+	{"correlate", "多维关联分析",              NULL},
 	{NULL, NULL, NULL},
 };
 
@@ -56,6 +59,8 @@ int main(int argc, char **argv)
 	const char *prog = argv[0];
 
 	config_init();
+	storage_init("report/eebpf.db");
+	atexit(storage_close);
 
 	if (argc < 2) {
 		print_help(prog);
