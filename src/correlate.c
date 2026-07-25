@@ -24,11 +24,15 @@ typedef struct {
 } result_t;
 
 // 信号匹配模式 — 按 subtype 关键词匹配
+// cond_a/cond_b: 可选指标谓词, 格式 "key>50" / "key<100" / "key>=0.8"
+// NULL = 不约束. 匹配时从 metrics[] 查 key, 取前缀数值比较
 typedef struct {
 	const char *module_a;
 	const char *sig_a;       // NULL = 匹配所有
+	const char *cond_a;      // 可选指标谓词
 	const char *module_b;
 	const char *sig_b;
+	const char *cond_b;      // 可选指标谓词
 	int confidence;          // 0-100
 	relation_t relation;
 	const char *reasoning;
@@ -38,79 +42,79 @@ static rule_t rules[MAX_RULES];
 static int n_rules = 0;
 
 // 注册规则
-#define RULE(ma, sa, mb, sb, conf, rel, why) \
-	rules[n_rules++] = (rule_t){ma, sa, mb, sb, conf, REL_##rel, why}
+#define RULE(ma, sa, ca, mb, sb, cb, conf, rel, why) \
+	rules[n_rules++] = (rule_t){ma, sa, ca, mb, sb, cb, conf, REL_##rel, why}
 
 static void init_rules(void)
 {
 	if (n_rules > 0) return;
 
 	// === CPU -> Lock (2) ===
-	RULE("cpu", "CPU异常占用", "lock", "锁竞争", 85, CAUSAL,
+	RULE("cpu", "CPU异常占用", "CPU 占用>50", "lock", "锁竞争", NULL, 85, CAUSAL,
 		"锁竞争导致 CPU 空转: lock 等待者 on-CPU 但无实际进展");
-	RULE("cpu", "CPU异常占用", "lock", "futex 长期等待", 80, CAUSAL,
+	RULE("cpu", "CPU异常占用", NULL, "lock", "futex 长期等待", NULL, 80, CAUSAL,
 		"futex 长期睡眠导致调用者被调度离开 CPU, 形成 CPU 空转假象");
 
 	// === CPU -> Hot (2) ===
-	RULE("cpu", "CPU异常占用", "hot", "高频调用", 75, CONFIRM,
+	RULE("cpu", "CPU异常占用", "CPU 占用>50", "hot", "高频调用", NULL, 75, CONFIRM,
 		"系统调用风暴验证 CPU 异常: 高频 syscall 是 CPU 占用的直接来源");
-	RULE("cpu", "CPU异常占用", "hot", "高频 + 高耗时", 90, CAUSAL,
+	RULE("cpu", "CPU异常占用", "CPU 占用>50", "hot", "高频 + 高耗时", NULL, 90, CAUSAL,
 		"高频+高耗时系统调用是 CPU 异常的强因: 调用频率与耗时的乘积");
 
 	// === CPU -> Mem (3) ===
-	RULE("cpu", "CPU异常占用", "mem", "回收抖动", 80, CAUSAL,
+	RULE("cpu", "CPU异常占用", NULL, "mem", "回收抖动", NULL, 80, CAUSAL,
 		"内存回收抖动触发 kswapd 消耗 CPU: 页面回收需要内核 CPU 时间");
-	RULE("cpu", "调度延迟", "mem", "换页颠簸", 70, CAUSAL,
+	RULE("cpu", "调度延迟", "调度延迟>5000", "mem", "换页颠簸", NULL, 70, CAUSAL,
 		"换页颠簸引发缺页处理 → 调度延迟增大");
-	RULE("cpu", "CPU异常占用", "mem", "OOM", 85, CAUSAL,
+	RULE("cpu", "CPU异常占用", NULL, "mem", "OOM", NULL, 85, CAUSAL,
 		"内存耗尽导致 OOM Killer 扫描进程列表及释放内存, 消耗大量 CPU");
 
 	// === I/O -> CPU (2) ===
-	RULE("io", "I/O 延迟抖动", "cpu", "调度延迟", 65, CO_OCCUR,
+	RULE("io", "I/O 延迟抖动", "P99 时延>10000", "cpu", "调度延迟", NULL, 65, CO_OCCUR,
 		"I/O 等待提高 iowait, 减少有效 CPU 时间: 非因果但共现");
-	RULE("io", "I/O 延迟抖动", "cpu", NULL, 50, CO_OCCUR,
+	RULE("io", "I/O 延迟抖动", NULL, "cpu", NULL, NULL, 50, CO_OCCUR,
 		"I/O 抖动期间 CPU 可能表现为 idle(iowait), 无 CPU 异常信号");
 
 	// === I/O -> Lock (2) ===
-	RULE("io", "缓存失效", "lock", "锁竞争", 60, CO_OCCUR,
+	RULE("io", "缓存失效", NULL, "lock", "锁竞争", NULL, 60, CO_OCCUR,
 		"页缓存失效 + 锁竞争: 可能是文件锁/block 层锁影响 I/O 与并发");
-	RULE("io", "热点文件", "lock", "锁竞争", 55, CO_OCCUR,
+	RULE("io", "热点文件", NULL, "lock", "锁竞争", NULL, 55, CO_OCCUR,
 		"热点文件集中访问 + 锁竞争: 多线程竞争同一文件区域");
 
 	// === I/O -> Hot (2) ===
-	RULE("io", "I/O 延迟抖动", "hot", "高耗时", 75, CONFIRM,
+	RULE("io", "I/O 延迟抖动", NULL, "hot", "高耗时", NULL, 75, CONFIRM,
 		"高耗时 syscall(read/write/fsync) 佐证 I/O 延迟抖动根因");
-	RULE("io", "缓存失效", "hot", "高耗时", 70, CAUSAL,
+	RULE("io", "缓存失效", NULL, "hot", "高耗时", NULL, 70, CAUSAL,
 		"页缓存失效导致 read 走磁盘路径: syscall 耗时升高与缓存失效同现");
 
 	// === I/O -> Mem (2, 保留原有 + 扩展) ===
-	RULE("io", "缓存失效", "mem", "缓存颠簸", 90, CAUSAL,
+	RULE("io", "缓存失效", NULL, "mem", "缓存颠簸", NULL, 90, CAUSAL,
 		"页缓存驱逐: I/O 缓存失效 + 内存 refault 缓存颠簸, 互相放大");
-	RULE("io", "队列瞬时拥堵", "mem", "回收抖动", 85, CAUSAL,
+	RULE("io", "队列瞬时拥堵", NULL, "mem", "回收抖动", NULL, 85, CAUSAL,
 		"回收阻塞 I/O: 直接回收触发大量磁盘写回, I/O 队列拥塞");
 
 	// === Mem -> Hot (2) ===
-	RULE("mem", "缺页", "hot", "高频调用", 85, CAUSAL,
+	RULE("mem", "缺页", NULL, "hot", "高频调用", NULL, 85, CAUSAL,
 		"频繁缺页伴随 mmap/brk 等内存 syscall, syscall 高频验证内存压力来源");
-	RULE("mem", "高占用", "hot", "高频调用", 65, CONFIRM,
+	RULE("mem", "高占用", "内存使用>80", "hot", "高频调用", NULL, 65, CONFIRM,
 		"内存高占用 + syscall 高频: 内存申请模式分析");
 
 	// === Mem -> Lock (2) ===
-	RULE("mem", "缺页颠簸", "lock", "锁竞争", 60, CO_OCCUR,
+	RULE("mem", "缺页颠簸", NULL, "lock", "锁竞争", NULL, 60, CO_OCCUR,
 		"缺页颠簸可能触发 mmap_sem 争用, 与锁竞争共现");
-	RULE("mem", "缺页激增", "lock", "锁竞争", 65, CAUSAL,
+	RULE("mem", "缺页激增", NULL, "lock", "锁竞争", NULL, 65, CAUSAL,
 		"缺页激增引发内核锁(mmap_sem)等待 → 用户态锁竞争加剧");
 
 	// === Lock -> Hot (2) ===
-	RULE("lock", "锁竞争", "hot", "高耗时", 80, CONFIRM,
+	RULE("lock", "锁竞争", "futex 平均等待>10000", "hot", "高耗时", NULL, 80, CONFIRM,
 		"锁竞争导致 futex 高耗时: syscall 层面验证锁等待时间");
-	RULE("lock", "futex 长期等待", "hot", "高频调用", 75, CAUSAL,
+	RULE("lock", "futex 长期等待", NULL, "hot", "高频调用", NULL, 75, CAUSAL,
 		"futex 长期等待引发重试 futex 调用: 锁等待→高频 syscall");
 
 	// === 单模块高信度异常, 无其他模块佐证 (2) ===
-	RULE("io", "缓存失效", "mem", NULL, 50, CO_OCCUR,
+	RULE("io", "缓存失效", NULL, "mem", NULL, NULL, 50, CO_OCCUR,
 		"I/O 缓存失效偏高, 窗口内无内存异常: 可能是冷数据访问, 非页颠簸");
-	RULE("mem", "缓存颠簸", "io", NULL, 50, CO_OCCUR,
+	RULE("mem", "缓存颠簸", NULL, "io", NULL, NULL, 50, CO_OCCUR,
 		"内存 refault 缓存颠簸, 窗口内无 I/O 缓存失效: 单侧内存压力");
 }
 
@@ -169,6 +173,36 @@ static int sig_match(const char *subtype, const char *keyword)
 	return strstr(subtype, keyword) != NULL;
 }
 
+// 指标谓词匹配: cond 格式 "key>50" / "key<100" / "key>=0.8" / "key<=10"
+// NULL = 不约束. 从 finding->metrics[] 查 key, 取 val 前缀数值比较
+static int cond_match(const finding_t *f, const char *cond)
+{
+	if (!cond) return 1;
+	if (!f) return 0;
+
+	char op[3] = {0};
+	char key[64];
+	double threshold;
+	if (sscanf(cond, "%63[^<>=<>]%2[<>=]%lf", key, op, &threshold) < 3)
+		return 0;
+
+	// 去除 key 末尾空格
+	size_t klen = strlen(key);
+	while (klen > 0 && (key[klen-1] == ' ' || key[klen-1] == '\t'))
+		key[--klen] = '\0';
+
+	for (int i = 0; i < f->n_metrics; i++) {
+		if (strcmp(f->metrics[i].key, key) != 0) continue;
+		double val = atof(f->metrics[i].val);
+		if (strcmp(op, ">") == 0)  return val > threshold;
+		if (strcmp(op, "<") == 0)  return val < threshold;
+		if (strcmp(op, ">=") == 0) return val >= threshold;
+		if (strcmp(op, "<=") == 0) return val <= threshold;
+		return 0;
+	}
+	return 0;  // key 不存在
+}
+
 // 解析 ISO-8601 timestamp 为 epoch 秒
 static double parse_epoch(const char *ts)
 {
@@ -200,6 +234,7 @@ static void print_text(mod_data_t *mods, int n_mods, int window_s)
 		for (int i = 0; i < mods[ia].n; i++) {
 			finding_t *fa = &mods[ia].f[i];
 			if (!sig_match(fa->subtype, r->sig_a)) continue;
+			if (!cond_match(fa, r->cond_a)) continue;
 
 			if (r->sig_b == NULL) {
 				// 单侧规则: A侧命中, B侧无相关信号
@@ -226,6 +261,7 @@ static void print_text(mod_data_t *mods, int n_mods, int window_s)
 			for (int j = 0; j < mods[ib].n; j++) {
 				finding_t *fb = &mods[ib].f[j];
 				if (!sig_match(fb->subtype, r->sig_b)) continue;
+				if (!cond_match(fb, r->cond_b)) continue;
 
 				double ta = parse_epoch(fa->timestamp);
 				double tb = parse_epoch(fb->timestamp);
@@ -278,6 +314,7 @@ static void print_json(mod_data_t *mods, int n_mods, int window_s)
 		for (int i = 0; i < mods[ia].n; i++) {
 			finding_t *fa = &mods[ia].f[i];
 			if (!sig_match(fa->subtype, r->sig_a)) continue;
+			if (!cond_match(fa, r->cond_a)) continue;
 
 			if (r->sig_b == NULL) {
 				int has_b_signal = 0;
@@ -307,6 +344,7 @@ static void print_json(mod_data_t *mods, int n_mods, int window_s)
 			for (int j = 0; j < mods[ib].n; j++) {
 				finding_t *fb = &mods[ib].f[j];
 				if (!sig_match(fb->subtype, r->sig_b)) continue;
+				if (!cond_match(fb, r->cond_b)) continue;
 
 				double ta = parse_epoch(fa->timestamp);
 				double tb = parse_epoch(fb->timestamp);
