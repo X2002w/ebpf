@@ -29,5 +29,5 @@ make install-bin install-conf install-ai DESTDIR=%{buildroot} PREFIX=/usr
 %{_datadir}/eebpf/
 
 %changelog
-* Sat Jul 26 2026 Li Yan <15008695828@163.com> - @VERSION@-1
+* @DATE@ Li Yan <15008695828@163.com> - @VERSION@-1
 - Release @VERSION@

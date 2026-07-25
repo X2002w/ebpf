@@ -159,8 +159,9 @@ rpm: $(APP)
 		--transform 's,^,eebpf-$(RPM_VERSION)/,' \
 		-C . .
 	sed -e 's/@VERSION@/$(RPM_VERSION)/' \
+		-e "s/@DATE@/$$(date '+%a %b %d %Y')/" \
 		packaging/RPM/control.in > $(RPM_TOPDIR)/SPECS/eebpf.spec
-	rpmbuild -bb --define "_topdir $(abspath $(RPM_TOPDIR))" \
+	rpmbuild -bb --nodeps --define "_topdir $(abspath $(RPM_TOPDIR))" \
 		$(RPM_TOPDIR)/SPECS/eebpf.spec
 	cp $(RPM_TOPDIR)/RPMS/$(RPM_ARCH)/*.rpm ./$(RPM_NAME)
 	@echo "  => $(RPM_NAME)"
