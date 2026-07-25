@@ -14,6 +14,7 @@ CPU_DUR="${CPU_DUR:-30}"
 IO_DUR="${IO_DUR:-30}"
 MEM_DUR="${MEM_DUR:-30}"
 LOCK_DUR="${LOCK_DUR:-30}"
+HOT_DUR="${HOT_DUR:-30}"
 EEBPF_DUR="${EEBPF_DUR:-15}"
 
 # fio 测试文件须落在真实块设备上 (tmpfs 不产生 I/O)
@@ -171,7 +172,7 @@ if [ "$(id -u)" != "0" ]; then
 	exit 1
 fi
 
-echo "[1/5] 依赖检查"
+echo "[1/6] 依赖检查"
 check_deps
 
 # 初始化汇总表
@@ -191,14 +192,14 @@ echo "|------|------|----------|--------|----------|" >> "$SUMMARY"
 
 # ================================================================
 echo ""
-echo "[2/5] CPU 异常 — stress-ng CPU 密集计算"
+echo "[2/6] CPU 异常 — stress-ng CPU 密集计算"
 run_scenario "CPU 密集计算" "cpu" \
 	"stress-ng --cpu 4 --cpu-method matrixprod --timeout ${CPU_DUR}s --metrics-brief" \
 	"CPU 密集"
 
 # ================================================================
 echo ""
-echo "[3/5] I/O 异常 — fio 随机读写"
+echo "[3/6] I/O 异常 — fio 随机读写"
 run_scenario "I/O 随机读写抖动" "io" \
 	"fio --name=randrw --filename=$FIO_FILE --size=$FIO_SIZE --rw=randrw --rwmixread=70 --bs=4k --iodepth=64 --numjobs=4 --runtime=${IO_DUR} --time_based --group_reporting --direct=1 --ioengine=libaio" \
 	"I/O" \
@@ -206,17 +207,24 @@ run_scenario "I/O 随机读写抖动" "io" \
 
 # ================================================================
 echo ""
-echo "[4/5] 内存异常 — stress-ng 内存压力"
+echo "[4/6] 内存异常 — stress-ng 内存压力"
 run_scenario "内存压力与抖动" "mem" \
 	"stress-ng --vm 4 --vm-bytes 80% --vm-keep --timeout ${MEM_DUR}s --metrics-brief" \
 	"内存" "" "-a 30"
 
 # ================================================================
 echo ""
-echo "[5/5] 锁竞争 — stress-ng mutex 争用"
+echo "[5/6] 锁竞争 — stress-ng mutex 争用"
 run_scenario "futex 锁竞争" "lock" \
 	"stress-ng --mutex 8 --timeout ${LOCK_DUR}s --metrics-brief" \
 	"锁竞争"
+
+# ================================================================
+echo ""
+echo "[6/6] 系统调用热点 — stress-ng CPU 密集"
+run_scenario "系统调用热点" "hot" \
+	"stress-ng --cpu 4 --cpu-method matrixprod --timeout ${HOT_DUR}s --metrics-brief" \
+	"系统调用"
 
 # ================================================================
 # 结果汇总
@@ -230,6 +238,7 @@ cat >> "$SUMMARY" << EOF
 | I/O | fio randrw iodepth=64 | I/O 延迟抖动/队列拥堵 | 见上方验证表 |
 | 内存 | stress-ng --vm 4 --vm-bytes 80% | 内存抖动/回收压力 | 见上方验证表 |
 | 锁 | stress-ng --mutex 8 | 锁竞争/futex 等待 | 见上方验证表 |
+| 系统调用 | stress-ng --cpu 4 matrixprod | 系统调用热点 | 见上方验证表 |
 
 ## 输出文件
 
@@ -239,6 +248,7 @@ cat >> "$SUMMARY" << EOF
 | $OUT_DIR/io_demo.json | I/O 场景 JSON 报告 |
 | $OUT_DIR/mem_demo.json | 内存场景 JSON 报告 |
 | $OUT_DIR/lock_demo.json | 锁竞争场景 JSON 报告 |
+| $OUT_DIR/hot_demo.json | 系统调用热点 JSON 报告 |
 | $SUMMARY | 本汇总报告 |
 
 > 使用方法:
