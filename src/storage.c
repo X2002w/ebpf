@@ -268,12 +268,26 @@ fail:
 
 int storage_parse_findings_json(const char *json_path, finding_t *out, int max)
 {
-	if (!g_db) return 0;
+	// 文件不存在直接返回; 不依赖 storage_enabled
+	FILE *probe = fopen(json_path, "r");
+	if (!probe) return 0;
+	fclose(probe);
+
+	// 用全局 db (已开启时) 或临时内存库做 JSON1 查询
+	sqlite3 *db = g_db;
+	int opened_local = 0;
+	if (!db) {
+		if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 0;
+		opened_local = 1;
+	}
 	char *raw = read_file_all(json_path);
-	if (!raw) return 0;
+	if (!raw) {
+		if (opened_local) sqlite3_close(db);
+		return 0;
+	}
 
 	sqlite3_stmt *s;
-	if (sqlite3_prepare_v2(g_db,
+	if (sqlite3_prepare_v2(db,
 		"SELECT json_extract(f.value, '$.target'),"
 		"  COALESCE(json_extract(f.value, '$.is_anomaly'), 0),"
 		"  COALESCE(json_extract(f.value, '$.subtype'), ''),"
@@ -286,6 +300,7 @@ int storage_parse_findings_json(const char *json_path, finding_t *out, int max)
 		" WHERE json_extract(s.value, '$.type') = 'diagnosis' LIMIT ?",
 		-1, &s, NULL) != SQLITE_OK) {
 		free(raw);
+		if (opened_local) sqlite3_close(db);
 		return 0;
 	}
 	sqlite3_bind_text(s, 1, raw, -1, SQLITE_TRANSIENT);
@@ -307,6 +322,7 @@ int storage_parse_findings_json(const char *json_path, finding_t *out, int max)
 	}
 	sqlite3_finalize(s);
 	free(raw);
+	if (opened_local) sqlite3_close(db);
 	return n;
 }
 
