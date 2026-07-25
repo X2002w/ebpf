@@ -25,3 +25,7 @@ ai_analysis/__pycache__/
 !report/*.md
 report/*.db*
 !docs/**
+
+# 重新忽略交换文件,覆盖上方 !docs/** 的取消忽略
+*.swp
+*.swo
