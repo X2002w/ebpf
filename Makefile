@@ -151,7 +151,8 @@ RPM_NAME    := eebpf-$(RPM_VERSION).$(RPM_ARCH).rpm
 .PHONY: rpm
 rpm: $(APP)
 	rm -rf $(RPM_TOPDIR)
-	install -d $(RPM_TOPDIR)/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+	mkdir -p $(RPM_TOPDIR)/BUILD $(RPM_TOPDIR)/RPMS $(RPM_TOPDIR)/SOURCES \
+		$(RPM_TOPDIR)/SPECS $(RPM_TOPDIR)/SRPMS
 	tar czf $(RPM_TOPDIR)/SOURCES/eebpf-$(RPM_VERSION).tar.gz \
 		--exclude=.git --exclude=build --exclude=report \
 		--exclude='*.deb' --exclude='*.rpm' \
