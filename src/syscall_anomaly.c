@@ -286,14 +286,28 @@ static void print_report(FILE *out,
 		double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 		double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
 
-		if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
+		// 基线自适应: 调用次数 双阈值 OR 逻辑
+		char sys_target[128];
+		snprintf(sys_target, sizeof(sys_target), "%s (syscall)",
+		         syscall_name(entries[i].nr));
+		baseline_verdict_t bl;
+		double fixed_count = (double)g_cfg.hot_freq_per_sec * duration_s;
+		storage_check_baseline_anomaly("hot", sys_target, "调用次数",
+		                               (double)s->count, fixed_count, &bl);
+		int freq_fixed = (rate > g_cfg.hot_freq_per_sec);
+		int freq_baseline = bl.baseline_triggered;
+
+		if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us
+		    && err_pct <= g_cfg.hot_err_rate * 100 && !freq_baseline)
 			continue;
 
 		diag_count++;
 		fprintf(out, "\n  [%d] %s", diag_count, syscall_name(entries[i].nr));
 
 		const char *type = NULL;
-		if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
+		if (freq_baseline && !freq_fixed && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
+			type = "syscall 基线突增";
+		else if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
 			type = "高频 + 高耗时";
 		else if (rate > g_cfg.hot_freq_per_sec)
 			type = "高频调用";
@@ -308,7 +322,11 @@ static void print_report(FILE *out,
 		if (err_pct > 0)
 			fprintf(out, "      错误率: %.1f%% (%llu/%llu)\n", err_pct, s->err_count, s->count);
 
-		if (rate > g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
+		if (freq_baseline && !freq_fixed && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
+			fprintf(out,
+			        "      疑似根因: 系统调用频率相对历史均值显著升高, 虽未达固定阈值但偏离常态\n"
+			        "      建议: 排查调用路径是否进入异常工作模式; 持续观察趋势确认\n");
+		else if (rate > g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us)
 			fprintf(out,
 			        "      疑似根因: 事件循环或 busy-poll 导致短耗时系统调用高频重复\n"
 			        "      建议: 检查轮询逻辑，改用阻塞+超时或事件驱动模式\n");
@@ -509,7 +527,20 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			double avg_us = s->count ? (double)s->total_ns / s->count / 1000.0 : 0;
 			double err_pct = s->count ? (double)s->err_count / s->count * 100.0 : 0;
 
-			if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
+			// 基线自适应: 调用次数 双阈值 OR 逻辑
+			// metric_key="调用次数" 存的是窗口内计数, 故 fixed_threshold 也要按计数换算
+			char sys_target[128];
+			snprintf(sys_target, sizeof(sys_target), "%s (syscall)",
+			         syscall_name(entries[i].nr));
+			baseline_verdict_t bl;
+			double fixed_count = (double)g_cfg.hot_freq_per_sec * duration_s;
+			storage_check_baseline_anomaly("hot", sys_target, "调用次数",
+			                               (double)s->count, fixed_count, &bl);
+			int freq_fixed = (rate > g_cfg.hot_freq_per_sec);
+			int freq_baseline = bl.baseline_triggered;
+
+			if (rate <= g_cfg.hot_freq_per_sec && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100
+			    && !freq_baseline)
 				continue;
 
 			const char *type = NULL;
@@ -518,7 +549,11 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 
 			int is_anomaly = 1;
 
-			if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us) {
+			if (freq_baseline && !freq_fixed && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100) {
+				type = "syscall 基线突增";
+				root_cause = "系统调用频率相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+				suggestion = "排查调用路径是否进入异常工作模式; 持续观察趋势确认";
+			} else if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us) {
 				type = "高频 + 高耗时";
 				root_cause = "系统调用频繁调用且耗时偏高";
 				suggestion = "检查调用频率和阻塞原因，考虑异步化或批量操作";
@@ -569,7 +604,11 @@ static void print_syscall_json_report(struct syscall_entry *entries, int n,
 			json_obj_end(out, 5, 0);
 
 			fprintf(out, "            \"evidence\": [\n");
-			if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
+			if (freq_baseline && !freq_fixed && avg_us <= g_cfg.hot_lat_us && err_pct <= g_cfg.hot_err_rate * 100)
+				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s), 超过基线阈值 %.1f (历史均值+%.0fσ, 固定阈值 %.0f/s)\"\n",
+					syscall_name(entries[i].nr), s->count, rate, bl.baseline_threshold,
+					g_cfg.baseline_z_score, (double)g_cfg.hot_freq_per_sec);
+			else if (rate > g_cfg.hot_freq_per_sec && avg_us > g_cfg.hot_lat_us)
 				fprintf(out, "              \"%s 调用 %llu 次 (%.0f/s, 阈值 %d/s), 平均耗时 %.0f us (阈值 %d us), 双高异常\"\n",
 					syscall_name(entries[i].nr), s->count, rate, g_cfg.hot_freq_per_sec, avg_us, g_cfg.hot_lat_us);
 			else if (rate > g_cfg.hot_freq_per_sec)
