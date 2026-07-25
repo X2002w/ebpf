@@ -22,6 +22,7 @@
 #include <sys/ioctl.h>
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
+#include "../include/bpf_shared.h"
 #include "../include/report_json.h"
 #include "../include/storage.h"
 #include "../include/report_md.h"
@@ -37,33 +38,15 @@
 #define BUSYLOOP_CS_PER_MIN   5000    // busy loop 判定: 切换 < 5000/min
 #define STACK_CONC_RATIO      0.8     // 栈集中度: top1 占比 > 80% = 集中
 
-// ─── 统计结构 (必须与 BPF 侧一致) ────────────────────────────────
-// 后续改为统一在 common.h 里定义
-struct pid_stats {
-	unsigned long long on_cpu_ns;
-	unsigned long long cswitch_total;
-	unsigned long long cswitch_voluntary;
-	unsigned long long cswitch_involuntary;
-	unsigned long long wakeup_count;
-	unsigned long long total_sched_delay_ns;
-	unsigned long long max_sched_delay_ns;
-	unsigned long long wait_ns;
-	unsigned long long sleep_ns;
-	unsigned long long blocked_ns;
-	unsigned long long migrate_count;
-	unsigned long long futex_wait_ns;
-	unsigned long long futex_wait_count;
-	unsigned long long cpu_runtime_ns;
-};
-
-// ─── 进程信息 ────────────────────────────────────────────────────
+// pid_stats / cpu_task_info 来自 bpf_shared.h
+// 进程信息
 struct proc_info {
 	__u32 pid;
 	char comm[16];
 	struct pid_stats stats;
 };
 
-// ─── 栈聚合 ──────────────────────────────────────────────────────
+// 栈聚合
 struct stack_entry {
 	__s32 stack_id;
 	__u64 count;
@@ -72,14 +55,14 @@ struct stack_entry {
 #include "../include/utils.h"
 #include "../include/module.h"
 
-// ─── libbpf 日志 ─────────────────────────────────────────────────
+// libbpf 日志
 static int print_fn(enum libbpf_print_level lvl, const char *fmt, va_list ap)
 {
 	if (lvl == LIBBPF_DEBUG) return 0;
 	return vfprintf(stderr, fmt, ap);
 }
 
-// ─── 收集 map 中所有进程统计 ─────────────────────────────────────
+// 收集 map 中所有进程统计
 static int collect_procs(int map_fd, struct proc_info **out, int *out_count)
 {
 	int capacity = 256;
@@ -120,7 +103,7 @@ static int collect_procs(int map_fd, struct proc_info **out, int *out_count)
 	return 0;
 }
 
-// ─── CPU% 比较 (降序) ────────────────────────────────────────────
+// CPU% 比较 (降序)
 static int cmp_cpu(const void *a, const void *b)
 {
 	const struct proc_info *pa = a, *pb = b;
@@ -129,14 +112,14 @@ static int cmp_cpu(const void *a, const void *b)
 	return (cb > ca) - (ca > cb);
 }
 
-// ─── stack 比较 (降序) ──────────────────────────────────────────
+// stack 比较 (降序)
 static int cmp_stack(const void *a, const void *b)
 {
 	const struct stack_entry *sa = a, *sb = b;
 	return (sb->count > sa->count) - (sa->count > sb->count);
 }
 
-// ─── 收集栈采样统计 ──────────────────────────────────────────────
+// 收集栈采样统计
 static int collect_stacks(int counts_fd, struct stack_entry **out, int *out_count,
                           __u64 *total_samples)
 {
@@ -303,7 +286,7 @@ static void print_report(FILE *out,
 	// 按 CPU% 排序
 	qsort(procs, count, sizeof(struct proc_info), cmp_cpu);
 
-	// ── 栈采样概要 ──
+	// 栈采样概要
 	if (total_stack_samples > 0) {
 		qsort(stacks, stack_count, sizeof(struct stack_entry), cmp_stack);
 		fprintf(out,
@@ -362,7 +345,7 @@ static void print_report(FILE *out,
 			? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0
 			: 0;
 
-		// ── 判定异常 & 根因分类 ──
+		// 判定异常 & 根因分类
 		int is_anomaly = 0;
 		const char *subtype = NULL;
 		const char *root_cause = NULL;
@@ -377,7 +360,7 @@ static void print_report(FILE *out,
 			                      (double)total_stack_samples;
 		}
 
-		// ── 分支1: CPU 高占用 ──
+		// 分支1: CPU 高占用
 		if (cpu_pct > cpu_threshold) {
 			is_anomaly = 1;
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
@@ -428,7 +411,7 @@ static void print_report(FILE *out,
 			}
 		}
 
-		// ── 分支2: 线程竞争 / 锁竞争 ──
+		// 分支2: 线程竞争 / 锁竞争
 		if (!is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
 		    cswitch_pm > CSWITCH_WARN_PER_MIN) {
 			is_anomaly = 1;
@@ -457,7 +440,7 @@ static void print_report(FILE *out,
 			         cpu_pct);
 		}
 
-		// ── 分支3: 调度延迟异常 ──
+		// 分支3: 调度延迟异常
 		if (avg_delay_us > SCHED_DELAY_CRIT_US) {
 			if (!is_anomaly) {
 				is_anomaly = 1;
@@ -483,7 +466,7 @@ static void print_report(FILE *out,
 			         avg_delay_us, SCHED_DELAY_WARN_US);
 		}
 
-		// ── 分支4: 上下文切换风暴 ──
+		// 分支4: 上下文切换风暴
 		if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !is_anomaly) {
 			is_anomaly = 1;
 			subtype = "上下文切换风暴";
@@ -495,7 +478,7 @@ static void print_report(FILE *out,
 			         cswitch_pm, CSWITCH_CRIT_PER_MIN);
 		}
 
-		// ── 分支5: 核间迁移异常 ──
+		// 分支5: 核间迁移异常
 		if (s->migrate_count > (__u64)cswitch_pm / 2 && s->migrate_count > 100) {
 			if (!is_anomaly) {
 				is_anomaly = 1;
@@ -519,7 +502,7 @@ static void print_report(FILE *out,
 
 		seq++;
 
-		// ── 进程标题行 ──
+		// 进程标题行
 		const char *status_icon = is_anomaly ? "!!" : "OK";
 		fprintf(out,
 		        "──────────────────────────────────────────────────────────────────────\n"
@@ -530,7 +513,7 @@ static void print_report(FILE *out,
 		fprintf(out, "\n"
 		        "──────────────────────────────────────────────────────────────────────\n\n");
 
-		// ── 关键指标 ──
+		// 关键指标
 		fprintf(out,
 		        "  关键指标:\n"
 		        "    CPU 占用:           %6.1f%%\n"
@@ -567,7 +550,7 @@ static void print_report(FILE *out,
 
 		fprintf(out, "\n");
 
-		// ── 诊断信息 (仅异常进程) ──
+		// 诊断信息 (仅异常进程)
 		if (is_anomaly && ev_count > 0) {
 			fprintf(out, "  诊断证据:\n");
 			for (int e = 0; e < ev_count; e++)
@@ -588,7 +571,7 @@ static void print_report(FILE *out,
 	fflush(out);
 }
 
-// ─── JSON 报告输出 (使用统一 report_json 构建器) ─────────────────
+// JSON 报告输出 (使用统一 report_json 构建器)
 static void print_json_report(struct proc_info *procs, int count,
 			      __u64 total_interval_ns, int ncpu,
 			      double cpu_threshold,
@@ -990,7 +973,7 @@ static void print_json_report(struct proc_info *procs, int count,
 	fprintf(stderr, "[*] JSON 报告已写入 %s\n", path);
 }
 
-// ─── 用法 ────────────────────────────────────────────────────────
+// 用法
 static void usage(const char *prog)
 {
 	fprintf(stderr,
@@ -1085,7 +1068,7 @@ int run_cpu(int argc, char **argv)
 		return 1;
 	}
 
-	// ── 栈采样 (perf_event) ──
+	// 栈采样 (perf_event)
 	int *pe_fds = NULL;
 	int pe_count = 0;
 	int profile_enabled = 0;

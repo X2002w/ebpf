@@ -13,6 +13,7 @@
 #include <bpf/bpf.h>
 #include "io_anomaly.skel.h"
 #include "hotfile.skel.h"
+#include "../include/bpf_shared.h"
 #include "../include/io_anomaly.h"
 #include "../include/report_json.h"
 #include "../include/storage.h"
@@ -25,54 +26,24 @@
 #define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
 #define MAX_ACTIVE_DEVS 256
 #define MAX_THRASH_ENTRIES 5
-#define HIST_SLOTS 16
 
-// 与 BPF 侧 struct dev_stats 保持一致的统计结构
-struct dev_stats {
+// dev_stats / block_read_key / block_read_val / HIST_SLOTS 来自 bpf_shared.h
+
+struct file_io_stat {
 	unsigned long long rd_count;
 	unsigned long long wr_count;
 	unsigned long long rd_bytes;
 	unsigned long long wr_bytes;
 	unsigned long long total_lat_ns;
-	unsigned long long total_qwait_ns;
-	unsigned long long total_svc_ns;
-	unsigned long long max_lat_ns;
-  unsigned long long ii_qdepth_cur;
-  unsigned long long ic_qdepth_cur;
-  unsigned long long ii_qdepth_max;
-  unsigned long long ic_qdepth_max;
-  unsigned long long lat_hist[16];
-  unsigned long long cache_miss_count;
-  unsigned long long cache_miss_bytes;
-  unsigned long long total_rd_blks;
+	unsigned long long last_ts;
+	char comm[16];
+	char fname[40];
 };
-
-struct block_read_key {
-  unsigned int dev;
-  unsigned long long sector;
-};
-
-struct block_read_val {
-  unsigned long long first_ts;
-  unsigned long long last_ts;
-  unsigned int read_count;
-};
-
-struct file_io_stat {
-  unsigned long long rd_count;
-  unsigned long long wr_count;
-  unsigned long long rd_bytes;
-  unsigned long long wr_bytes;
-  unsigned long long total_lat_ns;
-  unsigned long long last_ts;
-  char comm[16];
-  char fname[40];
-}; 
 
 // 热点文件
 struct hot_entry {
-  unsigned long long file_key;
-  struct file_io_stat stat;
+	unsigned long long file_key;
+	struct file_io_stat stat;
 };
 
 struct thrash_entry {

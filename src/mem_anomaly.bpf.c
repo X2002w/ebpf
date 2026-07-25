@@ -3,25 +3,12 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "../include/bpf_shared.h"
 
 #define VMF_RETRY 0x000400
 #define VMF_ERROR 0x000873
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
-
-// 记录每个进程的缺页此次数
-struct pid_mem_stats {
-
-  __u64 fault_raw;      // 记录每次调用handle-mm-fault的次数
-  __u64 fault_completed;// 统计缺页处理完成的次数
-  
-  __u64 direct_reclaim_cnt;
-  __u64 direct_reclaim_ns;
-  __u64 reclaimed_pages;
-
-  __u64 fault_count;
-  __u64 last_fault_ts;  // 最近一次缺页时间戳
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -29,24 +16,6 @@ struct {
   __type(key, __u32);
   __type(value, struct pid_mem_stats);
 } pid_mem SEC(".maps");
-
-struct global_mem_stats {
-
-  // kswapd -> kernel 专门负责在内存不足时执行回收物理内存 (RAM) 的线程
-  __u64 kswapd_wake_count;
-  __u64 kswapd_active_ns;
-  __u64 direct_reclaim_cnt;
-  __u64 direct_reclaim_ns;
-  __u64 reclaimed_pages;
-
-  __u64 page_scan;  // inactive lru 扫描页数
-  __u64 page_steal; // inactive lru 回收页数
-
-  __u64 oom_kills;
-  __u32 last_oom_pid;
-
-
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_ARRAY);
