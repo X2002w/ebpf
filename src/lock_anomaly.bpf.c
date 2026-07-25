@@ -9,20 +9,9 @@
 #include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "../include/bpf_shared.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
-
-// Per-futex-key 热点锁统计 — key = (tgid, uaddr) 唯一标识进程内的一把锁
-struct lock_futex_key {
-	__u32 tgid;
-	__u64 uaddr;
-};
-
-struct futex_hot_stats {
-	__u64 wait_ns;
-	__u64 wait_count;
-	__u64 max_wait_ns;
-};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -31,25 +20,12 @@ struct {
 	__type(value, struct futex_hot_stats);
 } futex_key_stats SEC(".maps");
 
-// Per-PID futex 聚合 (lock 模块独立统计)
-struct lock_pid_stats {
-	__u64 futex_wait_ns;
-	__u64 futex_wait_count;
-	__u64 futex_max_wait_ns;
-};
-
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10240);
 	__type(key, __u32);            // TID
 	__type(value, struct lock_pid_stats);
 } lock_pid_stats SEC(".maps");
-
-// Futex 等待跟踪 (per‑tid)
-struct futex_wait_val {
-	__u64 ts;
-	__u64 uaddr;
-};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);

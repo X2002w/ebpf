@@ -25,6 +25,7 @@
 #include "../include/report_json.h"
 #include "../include/storage.h"
 #include "../include/report_md.h"
+#include "../include/bpf_shared.h"
 #include "cpu_anomaly.skel.h"
 #include "lock_anomaly.skel.h"
 #include "../include/lock_anomaly.h"
@@ -35,48 +36,14 @@
 // 配置常量
 #define HOT_KEY_RATIO          0.5      // 单键占比 > 50% = 热点锁
 
-// cpu_anomaly 的 pid_stats
-struct cpu_pid_stats {
-	unsigned long long on_cpu_ns;
-	unsigned long long cswitch_total;
-	unsigned long long cswitch_voluntary;
-	unsigned long long cswitch_involuntary;
-	unsigned long long wakeup_count;
-	unsigned long long total_sched_delay_ns;
-	unsigned long long max_sched_delay_ns;
-	unsigned long long wait_ns;
-	unsigned long long sleep_ns;
-	unsigned long long blocked_ns;
-	unsigned long long migrate_count;
-	unsigned long long futex_wait_ns;
-	unsigned long long futex_wait_count;
-	unsigned long long cpu_runtime_ns;
-};
-
-// lock_anomaly 的结构体
-struct futex_key {
-	unsigned int tgid;
-	unsigned long long uaddr;
-};
-
-struct futex_hot_stats {
-	unsigned long long wait_ns;
-	unsigned long long wait_count;
-	unsigned long long max_wait_ns;
-};
-
-struct lock_pid_stats {
-	unsigned long long futex_wait_ns;
-	unsigned long long futex_wait_count;
-	unsigned long long futex_max_wait_ns;
-};
+// pid_stats / lock_futex_key / futex_hot_stats / lock_pid_stats 来自 bpf_shared.h
 
 
 // 进程信息
 struct lock_proc_info {
 	unsigned int pid;
 	char comm[16];
-	struct cpu_pid_stats cpu;
+	struct pid_stats cpu;
 	struct lock_pid_stats lock;
 };
 
@@ -134,7 +101,7 @@ static int collect_lock_procs(int cpu_stats_fd, int lock_stats_fd,
 		read_comm(next_key, p->comm, sizeof(p->comm));
 
 		// 补充 CPU skeleton 数据
-		struct cpu_pid_stats cval = {};
+		struct pid_stats cval = {};
 		bpf_map_lookup_elem(cpu_stats_fd, &next_key, &cval);
 		p->cpu = cval;
 
@@ -148,7 +115,7 @@ static int collect_lock_procs(int cpu_stats_fd, int lock_stats_fd,
 
 // 收集热点锁 (futex_key_stats)
 struct hot_lock_entry {
-	struct futex_key key;
+	struct lock_futex_key key;
 	struct futex_hot_stats stats;
 };
 
@@ -165,7 +132,7 @@ static int collect_hot_locks(int hot_fd, struct hot_lock_entry **out, int *out_c
 	*out = malloc(capacity * sizeof(struct hot_lock_entry));
 	if (!*out) return -1;
 
-	struct futex_key key = {}, next_key;
+	struct lock_futex_key key = {}, next_key;
 	while (bpf_map_get_next_key(hot_fd, &key, &next_key) == 0) {
 		struct futex_hot_stats val = {};
 		if (bpf_map_lookup_elem(hot_fd, &next_key, &val) != 0) {
@@ -349,7 +316,7 @@ static void print_lock_report(FILE *out,
 
 	for (int i = 0; i < count; i++) {
 		struct lock_pid_stats *ls = &procs[i].lock;
-		struct cpu_pid_stats *cs = &procs[i].cpu;
+		struct pid_stats *cs = &procs[i].cpu;
 
 		double futex_avg_us = ls->futex_wait_count > 0
 			? (double)ls->futex_wait_ns / (double)ls->futex_wait_count / 1000.0 : 0;
@@ -608,7 +575,7 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 		int diag = 0;
 		for (int i = 0; i < count && i < 20; i++) {
 			struct lock_pid_stats *ls = &procs[i].lock;
-			struct cpu_pid_stats *cs = &procs[i].cpu;
+			struct pid_stats *cs = &procs[i].cpu;
 			double futex_avg_us = ls->futex_wait_count > 0
 				? (double)ls->futex_wait_ns / (double)ls->futex_wait_count / 1000.0 : 0;
 			double futex_max_us = (double)ls->futex_max_wait_ns / 1000.0;

@@ -17,6 +17,7 @@
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
 #include "mem_anomaly.skel.h"
+#include "../include/bpf_shared.h"
 #include "../include/mem_anomaly.h"
 #include "../include/report_json.h"
 #include "../include/storage.h"
@@ -32,27 +33,7 @@
 #define MAX_FLT_CACHE 8192
 #define FLT_CACHE_TTL 4
 
-struct mem_proc_stats {
-  unsigned long long fault_raw;
-  unsigned long long fault_completed;
-  unsigned long long direct_reclaim_cnt;
-  unsigned long long direct_reclaim_ns;
-  unsigned long long reclaimed_pages;
-  unsigned long long fault_count;
-  unsigned long long last_fault_ts;
-};
-
-struct mem_sys_stats {
-  unsigned long long kswapd_wake_count;
-  unsigned long long kswapd_active_ns;
-  unsigned long long direct_reclaim_cnt;
-  unsigned long long direct_reclaim_ns;
-  unsigned long long reclaimed_pages;
-  unsigned long long page_scan;
-  unsigned long long page_steal;
-  unsigned long long oom_kills;
-  unsigned int last_oom_pid;
-};
+// pid_mem_stats / global_mem_stats 来自 bpf_shared.h
 
 struct meminfo {
   unsigned long long total, free, available, buffers, cached;
@@ -78,7 +59,7 @@ struct win_rates {
 
 struct proc_row {
   unsigned int tgid;
-  struct mem_proc_stats st;
+  struct pid_mem_stats st;
   unsigned long long minflt_d;
   unsigned long long majflt_d;
   int matched;
@@ -328,7 +309,7 @@ static void compute_rates(const struct vmstat *now, const struct vmstat *prev,
 
 
 // eBPF map 读取 
-static void read_sys_stats(int fd, struct mem_sys_stats *out)
+static void read_sys_stats(int fd, struct global_mem_stats *out)
 {
   __u32 key = 0;
   memset(out, 0, sizeof(*out));
@@ -354,7 +335,7 @@ static int read_proc_rows(int fd, struct proc_row *rows, int max_rows)
   int n = 0;
 
   while (bpf_map_get_next_key(fd, &key, &next_key) == 0) {
-    struct mem_proc_stats st = {};
+    struct pid_mem_stats st = {};
     if (bpf_map_lookup_elem(fd, &next_key, &st) != 0) {
       key = next_key;
       continue;
@@ -431,7 +412,7 @@ static const char *consist_label(const struct flt_audit *au, double *dev_pct)
 }
 
 static void print_overview(FILE *out, const struct meminfo *m,
-                           const struct mem_sys_stats *sys,
+                           const struct global_mem_stats *sys,
                            const struct win_rates *r,
                            const struct flt_audit *au,
                            unsigned long long tot_reclaim_ns,
@@ -522,7 +503,7 @@ static void print_top_procs(FILE *out, struct proc_row *rows, int n,
 {
   int shown = 0;
   for (int i = 0; i < n; i++) {
-    struct mem_proc_stats *s = &rows[i].st;
+    struct pid_mem_stats *s = &rows[i].st;
     if (s->fault_raw == 0 && s->direct_reclaim_cnt == 0) continue;
     shown++;
   }
@@ -538,7 +519,7 @@ static void print_top_procs(FILE *out, struct proc_row *rows, int n,
 
   int printed = 0;
   for (int i = 0; i < n && printed < MAX_TOP; i++) {
-    struct mem_proc_stats *s = &rows[i].st;
+    struct pid_mem_stats *s = &rows[i].st;
     if (s->fault_raw == 0 && s->direct_reclaim_cnt == 0) continue;
 
     double retry_ps = sub_clamp(s->fault_raw, s->fault_completed) / interval_s;
@@ -556,7 +537,7 @@ static void print_top_procs(FILE *out, struct proc_row *rows, int n,
 }
 
 static void print_diagnosis(FILE *out, const struct meminfo *m,
-                            const struct mem_sys_stats *sys,
+                            const struct global_mem_stats *sys,
                             const struct win_rates *r,
                             const struct flt_audit *au,
                             struct proc_row *rows, int nrow,
@@ -753,7 +734,7 @@ static void detach_all(void)
 
 // 统一 JSON 报告
 static void print_mem_json_report(const struct meminfo *m,
-                                   const struct mem_sys_stats *sys,
+                                   const struct global_mem_stats *sys,
                                    const struct win_rates *r,
                                    const struct flt_audit *au,
                                    struct proc_row *rows, int nrow,
@@ -877,7 +858,7 @@ static void print_mem_json_report(const struct meminfo *m,
 
 		int printed = 0;
 		for (int i = 0; i < nrow && printed < 5; i++) {
-			struct mem_proc_stats *s = &rows[i].st;
+			struct pid_mem_stats *s = &rows[i].st;
 			if (s->fault_raw == 0 && s->direct_reclaim_cnt == 0) continue;
 
 			double rps = sub_clamp(s->fault_raw, s->fault_completed) / interval_s;
@@ -1204,7 +1185,7 @@ int run_mem(int argc, char **argv)
           interval, nlink);
 
   struct vmstat prev;
-  struct mem_sys_stats prev_sys;
+  struct global_mem_stats prev_sys;
   read_vmstat(&prev);
   read_sys_stats(sys_fd, &prev_sys);
   time_t start = time(NULL);
@@ -1215,7 +1196,7 @@ int run_mem(int argc, char **argv)
     struct meminfo m;
     struct vmstat now;
     struct win_rates rates;
-    struct mem_sys_stats sys;
+    struct global_mem_stats sys;
     struct proc_row rows[MAX_ROWS];
     struct flt_audit au;
 
@@ -1226,7 +1207,7 @@ int run_mem(int argc, char **argv)
 
     // BPF sys 累积值 → 窗口增量
     read_sys_stats(sys_fd, &sys);
-    struct mem_sys_stats sys_delta;
+    struct global_mem_stats sys_delta;
     sys_delta.kswapd_wake_count   = sub_clamp(sys.kswapd_wake_count,   prev_sys.kswapd_wake_count);
     sys_delta.kswapd_active_ns    = sub_clamp(sys.kswapd_active_ns,    prev_sys.kswapd_active_ns);
     sys_delta.direct_reclaim_cnt  = sub_clamp(sys.direct_reclaim_cnt,  prev_sys.direct_reclaim_cnt);

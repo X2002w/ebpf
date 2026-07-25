@@ -1,48 +1,16 @@
 // io_anomaly.bpf.c - io 抖动异常检测 kernel 态
 
-#include "vmlinux.h" 
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include "../include/bpf_shared.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 // cmd_flags mark
 #define CMD_FLAGS_MARK 0xFF
-#define HIST_SLOTS 16
 #define CACHE_WINDOW_NS 500000000ULL  // 500ms 同块重复读判定窗口
-
-// 每个块设备单独的检测数据
-
-struct dev_stats {
-  // 吞吐 and IOPS(每秒输入输出操作次数)
-  __u64 rd_count;   // 完成的读请求数
-  __u64 wr_count;   // 完成的写请求数
-  __u64 rd_bytes;
-  __u64 wr_bytes;
-
-  // 延迟
-  __u64 total_lat_ns;   // arg latency = total / 采样时间
-  __u64 total_qwait_ns;
-  __u64 total_svc_ns;
-  __u64 max_lat_ns;
-
-  // 块设备队列深度
-  // 分为insert->issue, issue->complete两个阶段
-  __u64 ii_qdepth_cur;
-  __u64 ic_qdepth_cur;
-
-  __u64 ii_qdepth_max;
-  __u64 ic_qdepth_max;
-
-  // 延迟直方图: bucket [i] = [2^i, 2^(i+1)) us, bucket 0 = [0, 2) us
-  __u64 lat_hist[HIST_SLOTS];
-
-  // 缓存失效检测
-  __u64 cache_miss_count;  // 窗口内重复读事件数
-  __u64 cache_miss_bytes;  // 重复读涉及字节数
-  __u64 total_rd_blks;     // 窗口内读块总数
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);
@@ -52,33 +20,12 @@ struct {
 
 } dev_stats SEC(".maps");
 
-// 缓存失效检测: 记录每个块设备扇区的最近读时间
-struct block_read_key {
-  __u32 dev;
-  __u64 sector;
-};
-
-struct block_read_val {
-  __u64 first_ts;
-  __u64 last_ts;
-  __u32 read_count;
-};
-
 struct {
   __uint(type, BPF_MAP_TYPE_LRU_HASH);
   __uint(max_entries, 65536);
   __type(key, struct block_read_key);
   __type(value, struct block_read_val);
 } block_read_hist SEC(".maps");
-
-// 单次IO_request
-struct io_req_info {
-  __u64 insert_ts;  // io_insert 时间戳
-  __u64 issue_ts;   
-  dev_t dev;        // dev设备号
-  unsigned int  nr_sector;    // 读写扇区数量
-  __u8 rw;          // 读 or 写
-};
 
 struct {
   __uint(type, BPF_MAP_TYPE_HASH);

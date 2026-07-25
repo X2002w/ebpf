@@ -19,44 +19,11 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_tracing.h>
+#include "../include/bpf_shared.h"
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
 #define TASK_RUNNING 0
-
-// Per‑PID 聚合统计 
-struct pid_stats {
-	// CPU & 上下文切换 (sched_switch)
-	__u64 on_cpu_ns;  // 当前进程执行的ns数
-	__u64 cswitch_total;
-
-  // 进程切出时，状态为非running -> 主动让出cpu，锁竞争 -> sleep()...
-	__u64 cswitch_voluntary;  
-
-  // 进程切出时，状态仍然时running -> 时间片到期 or 被抢占
-	__u64 cswitch_involuntary; 
-
-	// 调度延迟 (wakeup → sched_switch, 手动计算)
-	__u64 wakeup_count;
-	__u64 total_sched_delay_ns;
-	__u64 max_sched_delay_ns;
-
-	// sched_stat_* tracepoint 直接给出的时间 (需要 CONFIG_SCHEDSTATS=y)
-  // wait_ns -> 调度延迟
-	__u64 wait_ns;             // 在 runqueue 上等待的时间
-	__u64 sleep_ns;            // 睡眠时间
-	__u64 blocked_ns;          // 阻塞时间（I/O 等）
-
-	// 核间迁移
-	__u64 migrate_count;
-
-	// futex
-	__u64 futex_wait_ns;       // 等待 futex 的总时间
-	__u64 futex_wait_count;    // futex 等待次数
-
-	// sched_stat_runtime (需要 CONFIG_SCHEDSTATS=y)
-	__u64 cpu_runtime_ns;      // sched_stat 核算的实际执行时间
-};
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -66,11 +33,6 @@ struct {
 } pid_stats SEC(".maps");
 
 // 记录每个cpu上当前正在运行的任务，以及切入的时间，在sched_switch时实时更新
-struct cpu_task_info {
-	__u32 pid;
-	__u64 ts;   // 切入 CPU 的时间戳
-};
-
 // 每个cpu单独一份，无需考虑并发，用户态单独聚合所有cpu信息
 struct {
 	__uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
@@ -87,14 +49,15 @@ struct {
   __type(value, __u64);
 } sched_class_check SEC(".maps");
 
-// ─── Wakeup 时间戳（用于计算调度延迟） ────────────────────────────
+// Wakeup 时间戳（用于计算调度延迟）
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10240);
 	__type(key, __u32);    // PID
 	__type(value, __u64);  // wakeup 时间戳
 } wakeup_ts SEC(".maps");
-// ─── Futex 等待时间戳 (类似 wakeup_ts) ────────────────────────────
+
+// Futex 等待时间戳 (类似 wakeup_ts)
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 10240);
@@ -102,7 +65,7 @@ struct {
 	__type(value, __u64);  // futex enter 时间戳
 } futex_ts SEC(".maps");
 
-// ─── 调用栈采样 ──────────────────────────────────────────────────
+// 调用栈采样
 struct {
 	__uint(type, BPF_MAP_TYPE_STACK_TRACE);
 	__uint(max_entries, 10240);
@@ -117,7 +80,7 @@ struct {
 	__type(value, __u64);  // 采样命中次数
 } stack_counts SEC(".maps");
 
-// ─── sched_switch ─────────────────────────────────────────────────
+// sched_switch
 SEC("tp/sched/sched_switch")
 int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 {
@@ -187,7 +150,7 @@ int on_sched_switch(struct trace_event_raw_sched_switch *ctx)
 	return 0;
 }
 
-// ─── sched_wakeup / sched_wakeup_new 共用逻辑 ────────────────────
+// sched_wakeup / sched_wakeup_new 共用逻辑
 // wakeup_new 对应新进程首次唤醒, PID 必然不存在于 map, 走初始化分支
 // wakeup 对应已存在进程被唤醒, 走递增分支
 static __always_inline int handle_sched_wakeup(struct trace_event_raw_sched_wakeup_template *ctx)
@@ -223,7 +186,7 @@ int on_sched_wakeup_new(struct trace_event_raw_sched_wakeup_template *ctx)
 	return handle_sched_wakeup(ctx);
 }
 
-// ─── sched_stat_wait: 内核直接给出的 runqueue 等待时间 ──────────────
+// sched_stat_wait: 内核直接给出的 runqueue 等待时间
 SEC("tp/sched/sched_stat_wait")
 int on_sched_stat_wait(struct trace_event_raw_sched_stat_template *ctx)
 {
@@ -242,7 +205,7 @@ int on_sched_stat_wait(struct trace_event_raw_sched_stat_template *ctx)
 	return 0;
 }
 
-// ─── sched_stat_sleep: 内核直接给出的睡眠时间 ──────────────────────
+// sched_stat_sleep: 内核直接给出的睡眠时间
 SEC("tp/sched/sched_stat_sleep")
 int on_sched_stat_sleep(struct trace_event_raw_sched_stat_template *ctx)
 {
@@ -282,7 +245,7 @@ int on_sched_stat_blocked(struct trace_event_raw_sched_stat_template *ctx)
 	return 0;
 }
 
-// ─── sched_stat_runtime: 调度器核算的实际执行时间 ──────────────────
+// sched_stat_runtime: 调度器核算的实际执行时间
 SEC("tp/sched/sched_stat_runtime")
 int on_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime *ctx)
 {
@@ -301,7 +264,7 @@ int on_sched_stat_runtime(struct trace_event_raw_sched_stat_runtime *ctx)
 	return 0;
 }
 
-// ─── sched_migrate_task: 核间任务迁移 ────────────────────────────
+// sched_migrate_task: 核间任务迁移
 SEC("tp/sched/sched_migrate_task")
 int on_sched_migrate_task(struct trace_event_raw_sched_migrate_task *ctx)
 {
@@ -320,7 +283,7 @@ int on_sched_migrate_task(struct trace_event_raw_sched_migrate_task *ctx)
 	return 0;
 }
 
-// ─── sys_enter_futex: futex 调用入口，记录时间戳 ───────────────────
+// sys_enter_futex: futex 调用入口，记录时间戳
 SEC("tp/syscalls/sys_enter_futex")
 int on_sys_enter_futex(struct trace_event_raw_sys_enter *ctx)
 {
@@ -336,7 +299,7 @@ int on_sys_enter_futex(struct trace_event_raw_sys_enter *ctx)
 	return 0;
 }
 
-// ─── sys_exit_futex: futex 调用返回，结算等待时间 ───────────────────
+// sys_exit_futex: futex 调用返回，结算等待时间
 SEC("tp/syscalls/sys_exit_futex")
 int on_sys_exit_futex(struct trace_event_raw_sys_exit *ctx)
 {
@@ -365,7 +328,7 @@ int on_sys_exit_futex(struct trace_event_raw_sys_exit *ctx)
 	return 0;
 }
 
-// ─── 定时栈采样 (perf_event) ─────────────────────────────────────
+// 定时栈采样 (perf_event)
 SEC("perf_event")
 int on_profile(struct bpf_perf_event_data *ctx)
 {
