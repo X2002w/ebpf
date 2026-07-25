@@ -1370,18 +1370,18 @@ int run_io(int argc, char **argv)
 		print_hotfile_report(out, hotfile_stats_fd, (double)interval);
 		print_diagnosis(out, stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
 
+		if (json_output) {
+			print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
+			json_to_markdown("report/io.json", "report/io.md");
+			storage_save_from_json("io", "report/io.json");
+		}
+
 		if (exiting || (duration > 0 && time(NULL) - start >= duration))
 			break;
 
 		reset_file_stats(hotfile_stats_fd);
 		reset_dev_stats(stats_fd);
 		reset_block_read_hist(block_hist_fd);
-	}
-
-	if (json_output) {
-		print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
-		json_to_markdown("report/io.json", "report/io.md");
-		storage_save_from_json("io", "report/io.json");
 	}
 
 	fprintf(stderr, "[*] 正在退出...\n");

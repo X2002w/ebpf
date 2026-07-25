@@ -803,12 +803,10 @@ int run_syscall(int argc, char **argv)
 
 		print_report(out, entries, n, pids, pn, interval_ns);
 
-		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-			if (json_output) {
-				print_syscall_json_report(entries, n, pids, pn, interval_ns);
-				json_to_markdown("report/hot.json", "report/hot.md");
+		if (json_output) {
+			print_syscall_json_report(entries, n, pids, pn, interval_ns);
+			json_to_markdown("report/hot.json", "report/hot.md");
 			storage_save_from_json("hot", "report/hot.json");
-			}
 		}
 
 		free(entries);

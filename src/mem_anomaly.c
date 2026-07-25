@@ -1256,14 +1256,14 @@ int run_mem(int argc, char **argv)
                     tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
                     avail_pct_lo, majfault_hi);
 
-	if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-		if (json_output) {
-			print_mem_json_report(&m, &sys_delta, &rates, &au, rows, nrow,
-					  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
-					  avail_pct_lo, majfault_hi);
-			json_to_markdown("report/mem.json", "report/mem.md");
-			storage_save_from_json("mem", "report/mem.json");
+	if (json_output) {
+		print_mem_json_report(&m, &sys_delta, &rates, &au, rows, nrow,
+				  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
+				  avail_pct_lo, majfault_hi);
+		json_to_markdown("report/mem.json", "report/mem.md");
+		storage_save_from_json("mem", "report/mem.json");
 		}
+	if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
 		break;
 	}
   }

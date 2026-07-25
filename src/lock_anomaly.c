@@ -975,14 +975,12 @@ int run_lock(int argc, char **argv)
 		                  stacks, stack_count, total_stacks,
 		                  lock_stackmap_fd, ncpu, interval_ns);
 
-		if (exiting || (duration > 0 && time(NULL) - start >= duration)) {
-			if (json_output) {
-				print_json_report(procs, count, hot_locks, hot_count,
-						  stacks, stack_count, total_stacks,
-						  lock_stackmap_fd, interval_ns);
-				json_to_markdown("report/lock.json", "report/lock.md");
-				storage_save_from_json("lock", "report/lock.json");
-			}
+		if (json_output) {
+			print_json_report(procs, count, hot_locks, hot_count,
+				  stacks, stack_count, total_stacks,
+				  lock_stackmap_fd, interval_ns);
+			json_to_markdown("report/lock.json", "report/lock.md");
+			storage_save_from_json("lock", "report/lock.json");
 		}
 
 		free(procs);
