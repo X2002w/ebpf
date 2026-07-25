@@ -141,3 +141,25 @@ deb: $(APP)
 		packaging/DEBIAN/control.in > $(DEB_STAGING)/DEBIAN/control
 	dpkg-deb --root-owner-group --build $(DEB_STAGING) $(DEB_NAME)
 	@echo "  => $(DEB_NAME)"
+
+# rpm 目标 — 构建 .rpm 安装包
+RPM_TOPDIR  := $(BUILD_DIR)/rpmbuild
+RPM_VERSION := $(or $(VERSION),$(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//'),1.0.0)
+RPM_ARCH    := $(shell uname -m)
+RPM_NAME    := eebpf-$(RPM_VERSION).$(RPM_ARCH).rpm
+
+.PHONY: rpm
+rpm: $(APP)
+	rm -rf $(RPM_TOPDIR)
+	install -d $(RPM_TOPDIR)/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+	tar czf $(RPM_TOPDIR)/SOURCES/eebpf-$(RPM_VERSION).tar.gz \
+		--exclude=.git --exclude=build --exclude=report \
+		--exclude='*.deb' --exclude='*.rpm' \
+		--transform 's,^,eebpf-$(RPM_VERSION)/,' \
+		-C . .
+	sed -e 's/@VERSION@/$(RPM_VERSION)/' \
+		packaging/RPM/control.in > $(RPM_TOPDIR)/SPECS/eebpf.spec
+	rpmbuild -bb --define "_topdir $(abspath $(RPM_TOPDIR))" \
+		$(RPM_TOPDIR)/SPECS/eebpf.spec
+	cp $(RPM_TOPDIR)/RPMS/$(RPM_ARCH)/*.rpm ./$(RPM_NAME)
+	@echo "  => $(RPM_NAME)"

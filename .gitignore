@@ -9,6 +9,7 @@ demo/
 *.swo
 *.json
 *.deb
+*.rpm
 tags
 .*/
 !.github/

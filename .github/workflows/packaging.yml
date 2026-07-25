@@ -151,3 +151,126 @@ jobs:
           wait $SPID 2>/dev/null || true
 
           echo "ALL PASS"
+
+  rpm-amd64:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装构建依赖
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            clang llvm make git wget \
+            libbpf-devel elfutils-libelf-devel zlib-devel \
+            rpm-build stress-ng
+          ln -sf "$(command -v clang)" /usr/local/bin/clang
+
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          make -C /tmp/bpftool/src install
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 打包 rpm
+        run: make rpm
+
+      - name: 验证 rpm 结构
+        run: |
+          ls -lh eebpf-*.rpm
+          rpm -qpi eebpf-*.rpm
+
+      - name: 安装 rpm 并冒烟测试
+        run: |
+          dnf install -y --setopt=install_weak_deps=False ./eebpf-*.rpm
+          eebpf --version
+          eebpf-ai --help
+          sudo eebpf cpu  -i 1 -d 1 -j
+          sudo eebpf mem  -i 1 -d 1 -j
+          sudo eebpf io   -i 1 -d 1 -j
+          sudo eebpf hot  -i 1 -d 1 -j
+          sudo eebpf lock -i 1 -d 1 -p 0 -j
+          echo "RPM INSTALL PASS"
+
+  rpm-arm64:
+    runs-on: ubuntu-24.04-arm
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装构建依赖
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            clang llvm make git wget \
+            libbpf-devel elfutils-libelf-devel zlib-devel \
+            rpm-build stress-ng
+          ln -sf "$(command -v clang)" /usr/local/bin/clang
+
+      - name: 源码构建 bpftool
+        run: |
+          git clone --depth 1 --recurse-submodules --shallow-submodules \
+            https://github.com/libbpf/bpftool.git /tmp/bpftool
+          make -C /tmp/bpftool/src -j$(nproc)
+          make -C /tmp/bpftool/src install
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: 打包 rpm
+        run: make rpm
+
+      - name: 验证 rpm 结构
+        run: |
+          ls -lh eebpf-*.rpm
+          rpm -qpi eebpf-*.rpm
+
+      - name: 安装 rpm 并冒烟测试
+        run: |
+          dnf install -y --setopt=install_weak_deps=False ./eebpf-*.rpm
+          eebpf --version
+          eebpf-ai --help
+
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf hot -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          stress-ng --cpu 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf cpu -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          stress-ng --vm 2 --vm-bytes 128M &
+          SPID=$!
+          sleep 1
+          sudo eebpf mem -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          stress-ng --hdd 2 --hdd-bytes 32M &
+          SPID=$!
+          sleep 1
+          sudo eebpf io -i 2 -d 4 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          stress-ng --futex 2 &
+          SPID=$!
+          sleep 1
+          sudo eebpf lock -i 2 -d 4 -p 0 -j
+          kill $SPID 2>/dev/null || true
+          wait $SPID 2>/dev/null || true
+
+          echo "ALL PASS"
