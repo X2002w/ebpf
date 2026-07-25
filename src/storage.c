@@ -596,3 +596,46 @@ int storage_get_timeline(const char *module, int limit,
 	sqlite3_finalize(s);
 	return n;
 }
+int storage_exec_sql(const char *sql)
+{
+	if (!g_db) {
+		fprintf(stderr, "数据库未打开\n");
+		return -1;
+	}
+
+	sqlite3_stmt *s;
+	if (sqlite3_prepare_v2(g_db, sql, -1, &s, NULL) != SQLITE_OK) {
+		fprintf(stderr, "SQL 错误: %s\n", sqlite3_errmsg(g_db));
+		return -1;
+	}
+
+	int ncol = sqlite3_column_count(s);
+	int nrow = 0;
+
+	for (int i = 0; i < ncol; i++)
+		printf("%-20s", sqlite3_column_name(s, i));
+	printf("\n");
+	for (int i = 0; i < ncol * 20; i++)
+		putchar('-');
+	printf("\n");
+
+	int rc;
+	while ((rc = sqlite3_step(s)) == SQLITE_ROW) {
+		for (int i = 0; i < ncol; i++) {
+			const char *v = (const char *)sqlite3_column_text(s, i);
+			printf("%-20s", v ? v : "NULL");
+		}
+		printf("\n");
+		nrow++;
+	}
+
+	sqlite3_finalize(s);
+
+	if (rc != SQLITE_DONE)
+		fprintf(stderr, "查询中断: %s\n", sqlite3_errmsg(g_db));
+	else
+		printf("---\n%d 行\n", nrow);
+
+	return nrow;
+}
+

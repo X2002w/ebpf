@@ -1,5 +1,6 @@
 // history.c — 历史趋势查询
 // 用法: eebpf history <module> [--limit N] [-j]
+//       eebpf history --sql "SELECT ..."
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@ static const char *prog;
 static void print_usage(void)
 {
 	fprintf(stderr, "用法: %s history <cpu|io|mem|lock|hot> [--limit N] [-j]\n", prog);
+	fprintf(stderr, "      %s history --sql \"SELECT ...\"\n", prog);
 }
 
 static void print_timeline_text(const char *module, int limit)
@@ -56,22 +58,33 @@ int run_history(int argc, char **argv)
 {
 	prog = "eebpf";
 	int json_output = 0, limit = 20;
+	char *sql = NULL;
 
 	static struct option long_opts[] = {
 		{"limit", required_argument, NULL, 'n'},
+		{"sql",   required_argument, NULL, 'q'},
 		{"help",  no_argument,       NULL, 'h'},
 		{0, 0, 0, 0},
 	};
 
 	int opt;
-	while ((opt = getopt_long(argc, argv, "n:jh", long_opts, NULL)) != -1) {
+	while ((opt = getopt_long(argc, argv, "n:q:jh", long_opts, NULL)) != -1) {
 		switch (opt) {
 		case 'n': limit = atoi(optarg); break;
+		case 'q': sql = optarg; break;
 		case 'j': json_output = 1; break;
 		case 'h': print_usage(); return 0;
 		default:  print_usage(); return 1;
 		}
 	}
+
+	if (!storage_is_enabled()) {
+		fprintf(stderr, "eebpf history: 存储未启用，设置 storage_enabled=1\n");
+		return 1;
+	}
+
+	if (sql)
+		return storage_exec_sql(sql) >= 0 ? 0 : 1;
 
 	if (optind >= argc) {
 		fprintf(stderr, "eebpf history: 缺少模块名\n");
@@ -80,11 +93,6 @@ int run_history(int argc, char **argv)
 	}
 
 	const char *module = argv[optind];
-
-	if (!storage_is_enabled()) {
-		fprintf(stderr, "eebpf history: 存储未启用，设置 storage_enabled=1\n");
-		return 1;
-	}
 
 	if (json_output)
 		print_json_output(module, limit);
