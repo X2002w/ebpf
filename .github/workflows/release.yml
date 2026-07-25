@@ -22,7 +22,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg 
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
           sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
           sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
@@ -75,7 +75,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            make libelf-dev libbpf-dev zlib1g-dev wget gnupg
+            make libelf-dev libbpf-dev zlib1g-dev wget gnupg 
           wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 19
           sudo ln -sf "$(command -v clang-19)" /usr/local/bin/clang
           sudo ln -sf "$(command -v llvm-strip-19)" /usr/local/bin/llvm-strip
