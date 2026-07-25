@@ -30,13 +30,8 @@
 #include "../include/common.h"
 #include "../include/config.h"
 
-// 配置常量
-#define CSWITCH_WARN_PER_MIN  30000   // cswitch/min 警告阈值
-#define CSWITCH_CRIT_PER_MIN  50000   // cswitch/min 严重阈值
-#define SCHED_DELAY_WARN_US   5000    // avg 调度延迟 警告阈值 (us)
-#define SCHED_DELAY_CRIT_US   20000   // avg 调度延迟 严重阈值 (us)
-#define BUSYLOOP_CS_PER_MIN   5000    // busy loop 判定: 切换 < 5000/min
-#define STACK_CONC_RATIO      0.8     // 栈集中度: top1 占比 > 80% = 集中
+// cswitch/sched_delay/busyloop/stack_conc 阈值移至 eebpf.conf (g_cfg), 见 config.h
+// 仅保留 VOLUNTARY_RATIO_HIGH (与切换占比语义强绑定, 不需要单独调)
 
 // pid_stats / cpu_task_info 来自 bpf_shared.h
 // 进程信息
@@ -290,15 +285,15 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 		         sys->load1, sys->procs_running, sys->procs_blocked);
 
 		// 1a: 切换极少 + 栈高度集中 → busy loop
-		if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-		    stack_concentration > STACK_CONC_RATIO) {
+		if (cswitch_pm < g_cfg.busyloop_cs_per_min &&
+		    stack_concentration > g_cfg.stack_conc_ratio) {
 			d->subtype = "CPU异常占用 (busy loop)";
 			d->root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
 			d->suggestion = "perf top 定位到具体函数后检查循环退出条件；"
 			                "考虑添加 usleep/yield";
 		}
 		// 1b: 切换极少但无栈数据 → "疑似 busy loop"
-		else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+		else if (cswitch_pm < g_cfg.busyloop_cs_per_min &&
 		         total_stack_samples == 0) {
 			d->subtype = "CPU异常占用 (疑为 busy loop)";
 			d->root_cause = "进程切换频率极低 (< 5000/min)，疑似 busy loop；"
@@ -339,7 +334,7 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 
 	// 分支2: 线程竞争 / 锁竞争
 	if (!d->is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
-	    cswitch_pm > CSWITCH_WARN_PER_MIN) {
+	    cswitch_pm > g_cfg.cswitch_warn_per_min) {
 		d->is_anomaly = 1;
 		d->subtype = "线程/锁竞争";
 		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
@@ -365,7 +360,7 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 	}
 
 	// 分支3: 调度延迟异常
-	if (avg_delay_us > SCHED_DELAY_CRIT_US) {
+	if (avg_delay_us > g_cfg.sched_delay_crit_us) {
 		if (!d->is_anomaly) {
 			d->is_anomaly = 1;
 			d->subtype = "调度延迟异常";
@@ -377,8 +372,8 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 			                "考虑增加 CPU 资源或调整进程优先级";
 		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
 		         "平均调度延迟 %.0fus 超过严重阈值 %dus",
-		         avg_delay_us, SCHED_DELAY_CRIT_US);
-	} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
+		         avg_delay_us, g_cfg.sched_delay_crit_us);
+	} else if (avg_delay_us > g_cfg.sched_delay_warn_us) {
 		if (!d->is_anomaly) {
 			d->is_anomaly = 1;
 			d->subtype = "调度延迟偏高";
@@ -387,11 +382,11 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 		}
 		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
 		         "平均调度延迟 %.0fus 超过警告阈值 %dus",
-		         avg_delay_us, SCHED_DELAY_WARN_US);
+		         avg_delay_us, g_cfg.sched_delay_warn_us);
 	}
 
 	// 分支4: 上下文切换风暴
-	if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !d->is_anomaly) {
+	if (cswitch_pm > g_cfg.cswitch_crit_per_min && !d->is_anomaly) {
 		d->is_anomaly = 1;
 		d->subtype = "上下文切换风暴";
 		d->root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
@@ -399,7 +394,7 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 		                "使用 off-CPU 分析定位阻塞源";
 		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
 		         "上下文切换 %.0f/min 达风暴级别 (>%d/min)",
-		         cswitch_pm, CSWITCH_CRIT_PER_MIN);
+		         cswitch_pm, g_cfg.cswitch_crit_per_min);
 	}
 
 	// 分支5: 核间迁移异常
@@ -771,17 +766,17 @@ static void print_json_report(struct proc_info *procs, int count,
 
 			const char *status;
 			if (cpu_pct > cpu_threshold) {
-				if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-				    stack_concentration > STACK_CONC_RATIO)
+				if (cswitch_pm < g_cfg.busyloop_cs_per_min &&
+				    stack_concentration > g_cfg.stack_conc_ratio)
 					status = "!! busy loop";
 				else if (s->cswitch_involuntary > s->cswitch_voluntary * 10)
 					status = "!! CPU密集";
 				else
 					status = "!! 高CPU";
 			} else if (vol_ratio > VOLUNTARY_RATIO_HIGH &&
-				   cswitch_pm > CSWITCH_WARN_PER_MIN)
+				   cswitch_pm > g_cfg.cswitch_warn_per_min)
 				status = "!! 锁竞争";
-			else if (avg_delay_us > SCHED_DELAY_CRIT_US)
+			else if (avg_delay_us > g_cfg.sched_delay_crit_us)
 				status = "!! 调度延迟";
 			else
 				status = "OK";
