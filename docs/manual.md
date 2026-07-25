@@ -1,6 +1,6 @@
 # eebpf 用户手册
 
-eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 CPU、I/O、内存、锁竞争、系统调用热点 5 类异常场景，输出结构化诊断报告。
+sudo ./eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 CPU、I/O、内存、锁竞争、系统调用热点 5 类异常场景，输出结构化诊断报告。
 
 ---
 
@@ -57,7 +57,7 @@ make          # 生成 ./eebpf
 sudo apt install ./eebpf_*_amd64.deb
 
 # 验证
-eebpf --version
+sudo ./eebpf --version
 sudo eebpf cpu -d 10
 ```
 
@@ -115,7 +115,7 @@ API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt` > 
 
 ### 1.8 运行配置文件
 
-eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令行指定。
+sudo ./eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令行指定。
 
 **文件格式**: `key = value`，`#` 开头为注释行。
 
@@ -123,7 +123,7 @@ eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令
 
 | 路径 | 说明 |
 |---|---|
-| `./eebpf.conf` | 当前工作目录 |
+| `sudo ./eebpf.conf` | 当前工作目录 |
 | `~/.eebpf.conf` | 用户主目录 |
 | `/etc/eebpf.conf` | 系统级配置 |
 
@@ -258,11 +258,11 @@ sudo ./eebpf io -j -d 10      # 每窗口自动写入 DB
 ### 2.2 历史趋势查询
 
 ```bash
-./eebpf history <模块名> [--limit N] [-j]
+sudo ./eebpf history <模块名> [--limit N] [-j]
 
 # 示例
-./eebpf history io                   # 最近 20 条 io 时间线
-./eebpf history mem --limit 10 -j   # JSON 格式输出最近 10 条
+sudo ./eebpf history io                   # 最近 20 条 io 时间线
+sudo ./eebpf history mem --limit 10 -j   # JSON 格式输出最近 10 条
 ```
 
 ### 2.3 SQL 直接查询
@@ -270,22 +270,22 @@ sudo ./eebpf io -j -d 10      # 每窗口自动写入 DB
 直接执行 SQL 查询数据库：
 
 ```bash
-eebpf history --sql "SELECT * FROM findings WHERE module='io'"
+sudo ./eebpf history --sql "SELECT * FROM findings WHERE module='io'"
 
 # 联合查询：诊断结论 + 原始报告时长
-eebpf history --sql "
+sudo ./eebpf history --sql "
   SELECT f.module, f.timestamp, f.subtype, r.duration_s
   FROM findings f JOIN reports r ON f.report_id = r.id
   ORDER BY f.timestamp DESC;"
 
 # 各模块异常统计
-eebpf history --sql "
+sudo ./eebpf history --sql "
   SELECT module, subtype, COUNT(*) AS cnt
   FROM findings WHERE is_anomaly = 1
   GROUP BY module, subtype ORDER BY cnt DESC;"
 
 # 跨模块时间窗口关联（I/O + 内存）
-eebpf history --sql "
+sudo ./eebpf history --sql "
   SELECT io.subtype AS io_signal, mem.subtype AS mem_signal, io.timestamp
   FROM findings io JOIN findings mem
     ON mem.module='mem'
@@ -300,11 +300,11 @@ eebpf history --sql "
 加载 I/O 与内存 findings，时间窗口重叠检查，4 条关联规则匹配：
 
 ```bash
-./eebpf correlate [--window 60] [-j]
+sudo ./eebpf correlate [--window 60] [-j]
 
 # 示例
-./eebpf correlate                     # 默认 ±60s 窗口
-./eebpf correlate --window 120 -j    # ±120s 窗口，JSON 输出
+sudo ./eebpf correlate                     # 默认 ±60s 窗口
+sudo ./eebpf correlate --window 120 -j    # ±120s 窗口，JSON 输出
 ```
 
 关联规则：
@@ -398,7 +398,7 @@ eebpf history --sql "
 **时间线模式**：查看指定模块每次采样窗口的概要记录。
 
 ```
-eebpf history <模块名> [-n N] [-j]
+sudo ./eebpf history <模块名> [-n N] [-j]
 ```
 
 | 参数 | 默认 | 说明 |
@@ -411,9 +411,9 @@ eebpf history <模块名> [-n N] [-j]
 示例：
 
 ```bash
-./eebpf history io                    # 最近 20 条 I/O 采样记录
-./eebpf history mem --limit 10       # 最近 10 条内存记录
-./eebpf history cpu -n 5 -j          # 最近 5 条，JSON 输出
+sudo ./eebpf history io                    # 最近 20 条 I/O 采样记录
+sudo ./eebpf history mem --limit 10       # 最近 10 条内存记录
+sudo ./eebpf history cpu -n 5 -j          # 最近 5 条，JSON 输出
 ```
 
 输出格式（纯文本）：
@@ -432,7 +432,7 @@ eebpf history <模块名> [-n N] [-j]
 **SQL 模式**：直接对 `report/eebpf.db` 执行 SQL 查询
 
 ```
-eebpf history --sql "<SQL 语句>"
+sudo ./eebpf history --sql "<SQL 语句>"
 ```
 
 | 参数 | 默认 | 说明 |
@@ -443,16 +443,16 @@ eebpf history --sql "<SQL 语句>"
 
 ```bash
 # 查看 findings 表全部记录
-./eebpf history --sql "SELECT * FROM findings;"
+sudo ./eebpf history --sql "SELECT * FROM findings;"
 
 # 各模块异常统计
-./eebpf history --sql "
+sudo ./eebpf history --sql "
   SELECT module, subtype, COUNT(*) AS cnt
   FROM findings WHERE is_anomaly = 1
   GROUP BY module, subtype ORDER BY cnt DESC;"
 
 # 跨模块时间窗口关联（I/O + 内存）
-./eebpf history --sql "
+sudo ./eebpf history --sql "
   SELECT io.subtype AS io_signal, mem.subtype AS mem_signal, io.timestamp
   FROM findings io JOIN findings mem
     ON mem.module='mem'
@@ -462,12 +462,33 @@ eebpf history --sql "<SQL 语句>"
 
 数据库 schema 详见 2.3 节。
 
+---
+
+**清除模式**：删除数据库中的历史数据。
+
+```
+sudo ./eebpf history --clear [模块名]
+```
+
+| 参数 | 说明 |
+|---|---|
+| `-c, --clear` | 清除数据，无模块名则清除全部 |
+| `[模块名]` | 可选，仅清除指定模块数据 |
+
+示例：
+
+```bash
+sudo ./eebpf history --clear      # 清除全部数据
+sudo ./eebpf history --clear io   # 仅清除 io 模块数据
+```
+> 或者自行使用sudo ./eebpf history --sql "dlete ...;"sql语句方式删除
+
 ### 3.8 correlate
 
 多维关联分析，加载 I/O 与内存的历史检测结论，按时间窗口重叠 + 规则匹配输出关联结果。
 
 ```
-eebpf correlate [-w N] [-j]
+sudo ./eebpf correlate [-w N] [-j]
 ```
 
 | 参数 | 默认 | 说明 |
@@ -479,9 +500,9 @@ eebpf correlate [-w N] [-j]
 示例：
 
 ```bash
-./eebpf correlate                     # 默认 ±60s 窗口
-./eebpf correlate --window 120       # ±120s 窗口
-./eebpf correlate -w 30 -j           # ±30s 窗口，JSON 输出
+sudo ./eebpf correlate                     # 默认 ±60s 窗口
+sudo ./eebpf correlate --window 120       # ±120s 窗口
+sudo ./eebpf correlate -w 30 -j           # ±30s 窗口，JSON 输出
 ```
 
 关联规则及置信度详见 2.4 节。
