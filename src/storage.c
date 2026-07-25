@@ -225,8 +225,10 @@ static void extract_system_json(FILE *f, char *out, size_t len)
 	while (fgets(buf, sizeof(buf), f)) {
 		if (!in_system && strstr(buf, "\"system\":")) {
 			in_system = 1;
-			while (fgets(buf, sizeof(buf), f))
-				if (strstr(buf, "{")) break;
+			if (!strstr(buf, "{")) {
+				while (fgets(buf, sizeof(buf), f))
+					if (strstr(buf, "{")) break;
+			}
 			depth = 1;
 			continue;
 		}
