@@ -151,6 +151,7 @@ eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令
 | `hot_freq_per_sec` | int | 10000 | 系统调用频率告警（次/s） |
 | `hot_lat_us` | int | 10000 | 系统调用延迟告警（us） |
 | `hot_err_rate` | double | 0.1 | 系统调用错误率告警（0-1） |
+| `storage_enabled` | int | 0 | 启用 SQLite 历史存储（0/1） |
 
 **配置示例**:
 
@@ -219,6 +220,8 @@ sudo ./eebpf <子命令> [选项]
 | `mem` | 内存异常检测（缺页洪流、直接回收、kswapd、OOM，并与 /proc 数据对账） |
 | `lock` | 锁竞争检测（futex 等待追踪、热点锁识别、等待栈分析） |
 | `hot` | 系统调用热点分析（高频、高耗时、高错误率系统调用及进程级诊断） |
+| `history` | 历史趋势查询与 SQL 直接查询（时间线、自定义 SQL） |
+| `correlate` | 多维关联分析（I/O 缓存失效 + 内存抖动跨模块根因推断） |
 
 全局选项：`-v, --version` 显示版本；`-h, --help` 显示帮助。
 
@@ -241,6 +244,77 @@ sudo ./eebpf lock -d 180
 ```
 
 诊断报告默认输出到标准输出；Markdown 报告写入 `report/` 目录。
+
+### 2.1 历史数据存储
+
+启用 SQLite 存储后，每次采样窗口的记录自动写入 `report/eebpf.db`：
+
+```bash
+# 配置文件设置 storage_enabled = 1
+echo "storage_enabled = 1" >> eebpf.conf
+sudo ./eebpf io -j -d 10      # 每窗口自动写入 DB
+```
+
+### 2.2 历史趋势查询
+
+```bash
+./eebpf history <模块名> [--limit N] [-j]
+
+# 示例
+./eebpf history io                   # 最近 20 条 io 时间线
+./eebpf history mem --limit 10 -j   # JSON 格式输出最近 10 条
+```
+
+### 2.3 SQL 直接查询
+
+直接执行 SQL 查询数据库：
+
+```bash
+eebpf history --sql "SELECT * FROM findings WHERE module='io'"
+
+# 联合查询：诊断结论 + 原始报告时长
+eebpf history --sql "
+  SELECT f.module, f.timestamp, f.subtype, r.duration_s
+  FROM findings f JOIN reports r ON f.report_id = r.id
+  ORDER BY f.timestamp DESC;"
+
+# 各模块异常统计
+eebpf history --sql "
+  SELECT module, subtype, COUNT(*) AS cnt
+  FROM findings WHERE is_anomaly = 1
+  GROUP BY module, subtype ORDER BY cnt DESC;"
+
+# 跨模块时间窗口关联（I/O + 内存）
+eebpf history --sql "
+  SELECT io.subtype AS io_signal, mem.subtype AS mem_signal, io.timestamp
+  FROM findings io JOIN findings mem
+    ON mem.module='mem'
+    AND ABS(strftime('%s',io.timestamp)-strftime('%s',mem.timestamp)) <= 60
+  WHERE io.module='io' AND mem.is_anomaly = 1;"
+```
+
+数据库当前版本文件硬编码包含三张表：`reports`（原始 JSON）、`findings`（诊断结论）、`snapshots`（系统快照）。
+
+### 2.4 多维关联分析
+
+加载 I/O 与内存 findings，时间窗口重叠检查，4 条关联规则匹配：
+
+```bash
+./eebpf correlate [--window 60] [-j]
+
+# 示例
+./eebpf correlate                     # 默认 ±60s 窗口
+./eebpf correlate --window 120 -j    # ±120s 窗口，JSON 输出
+```
+
+关联规则：
+
+| 规则 | I/O 信号 | 内存信号 | 置信度 |
+|------|----------|----------|--------|
+| 页缓存驱逐 | 缓存失效偏高 | refault 缓存颠簸 | HIGH |
+| 回收阻塞 I/O | 队列瞬时拥堵 | 直接回收抖动 | HIGH |
+| 仅 I/O 缓存失效 | 缓存失效偏高 | 无 | MEDIUM |
+| 仅内存 refault | 无缓存失效 | 缓存颠簸 | MEDIUM |
 
 ---
 
@@ -317,6 +391,101 @@ sudo ./eebpf lock -d 180
 | `-j, --json` | 关 | 输出 JSON + Markdown 报告 |
 | `-h, --help` | - | 显示帮助信息 |
 
+### 3.7 history
+
+历史趋势查询，两种模式：
+
+**时间线模式**：查看指定模块每次采样窗口的概要记录。
+
+```
+eebpf history <模块名> [-n N] [-j]
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `<模块名>` | (必填) | cpu / io / mem / lock / hot |
+| `-n, --limit <N>` | 20 | 返回最近 N 条记录 |
+| `-j, --json` | 关 | JSON 格式输出 |
+| `-h, --help` | - | 显示帮助 |
+
+示例：
+
+```bash
+./eebpf history io                    # 最近 20 条 I/O 采样记录
+./eebpf history mem --limit 10       # 最近 10 条内存记录
+./eebpf history cpu -n 5 -j          # 最近 5 条，JSON 输出
+```
+
+输出格式（纯文本）：
+
+```
+时间窗口               持续(s)    异常数
+-------------------------------------------------
+2026-07-26T01:29:03      3.0        0
+2026-07-26T01:29:00      3.0        0
+---
+共 4 条记录
+```
+
+---
+
+**SQL 模式**：直接对 `report/eebpf.db` 执行 SQL 查询
+
+```
+eebpf history --sql "<SQL 语句>"
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-q, --sql <语句>` | - | 执行 SQL 查询并打印结果表格 |
+
+示例：
+
+```bash
+# 查看 findings 表全部记录
+./eebpf history --sql "SELECT * FROM findings;"
+
+# 各模块异常统计
+./eebpf history --sql "
+  SELECT module, subtype, COUNT(*) AS cnt
+  FROM findings WHERE is_anomaly = 1
+  GROUP BY module, subtype ORDER BY cnt DESC;"
+
+# 跨模块时间窗口关联（I/O + 内存）
+./eebpf history --sql "
+  SELECT io.subtype AS io_signal, mem.subtype AS mem_signal, io.timestamp
+  FROM findings io JOIN findings mem
+    ON mem.module='mem'
+    AND ABS(strftime('%s',io.timestamp)-strftime('%s',mem.timestamp)) <= 60
+  WHERE io.module='io' AND mem.is_anomaly = 1;"
+```
+
+数据库 schema 详见 2.3 节。
+
+### 3.8 correlate
+
+多维关联分析，加载 I/O 与内存的历史检测结论，按时间窗口重叠 + 规则匹配输出关联结果。
+
+```
+eebpf correlate [-w N] [-j]
+```
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `-w, --window <秒>` | 60 | I/O 事件与内存事件时间差在此范围内视为关联 |
+| `-j, --json` | 关 | JSON 格式输出 |
+| `-h, --help` | - | 显示帮助 |
+
+示例：
+
+```bash
+./eebpf correlate                     # 默认 ±60s 窗口
+./eebpf correlate --window 120       # ±120s 窗口
+./eebpf correlate -w 30 -j           # ±30s 窗口，JSON 输出
+```
+
+关联规则及置信度详见 2.4 节。
+
 ---
 
 ## 4. 设计说明
@@ -375,8 +544,7 @@ sudo ./eebpf lock -d 180
 3. **符号解析精度有限**：调用栈地址通过 `/proc/<pid>/maps` 解析为"模块+偏移"，不解析 DWARF/符号表，无法直接给出函数名；进程退出后栈地址无法回溯（显示原始地址），进程名显示 `<exited>`。
 4. **短生命周期进程可能漏检**：统计按采样间隔批量读取，间隔内创建并退出的进程可能只留下部分指标，/proc 对账数据缺失。
 5. **观测开销**：`hot` 模块追踪全量系统调用，高负载下有可感知开销；cpu/lock 的 perf 栈采样频率越高开销越大，可用 `-p 0` 禁用。
-6. **阈值为静态配置**：异常判定阈值可通过 `eebpf.conf` 配置文件调整，详见 1.7 节。部分参数也可经命令行参数覆盖。
-7. **暂无历史数据存储**：报告为单次快照，SQLite 历史存储与多维关联分析（如 I/O 缓存失效 + 内存抖动）在规划中。
+6. **阈值为静态配置**：异常判定阈值可通过 `eebpf.conf` 配置文件调整，详见 1.8 节。部分参数也可经命令行参数覆盖。
 
 ---
 
