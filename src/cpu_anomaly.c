@@ -23,6 +23,7 @@
 #include <sys/utsname.h>
 #include "cpu_anomaly.skel.h"
 #include "../include/report_json.h"
+#include "../include/storage.h"
 #include "../include/report_md.h"
 #include "../include/cpu_anomaly.h"
 #include "../include/common.h"
@@ -1207,6 +1208,7 @@ int run_cpu(int argc, char **argv)
 			  schedstats_on, sched_name, preempt_model,
 			  stackmap_fd);
 		json_to_markdown("report/cpu.json", "report/cpu.md");
+		storage_save_from_json("cpu", "report/cpu.json");
 	}
 
 		free(procs);

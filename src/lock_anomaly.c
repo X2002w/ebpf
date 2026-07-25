@@ -23,6 +23,7 @@
 #include <sys/utsname.h>
 #include "../include/utils.h"
 #include "../include/report_json.h"
+#include "../include/storage.h"
 #include "../include/report_md.h"
 #include "cpu_anomaly.skel.h"
 #include "lock_anomaly.skel.h"
@@ -980,6 +981,7 @@ int run_lock(int argc, char **argv)
 						  stacks, stack_count, total_stacks,
 						  lock_stackmap_fd, interval_ns);
 				json_to_markdown("report/lock.json", "report/lock.md");
+				storage_save_from_json("lock", "report/lock.json");
 			}
 		}
 

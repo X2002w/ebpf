@@ -13,6 +13,7 @@
 #include "../include/syscall_names.h"
 #include "../include/utils.h"
 #include "../include/report_json.h"
+#include "../include/storage.h"
 #include "../include/report_md.h"
 #include "../include/common.h"
 #include "../include/config.h"
@@ -806,6 +807,7 @@ int run_syscall(int argc, char **argv)
 			if (json_output) {
 				print_syscall_json_report(entries, n, pids, pn, interval_ns);
 				json_to_markdown("report/hot.json", "report/hot.md");
+			storage_save_from_json("hot", "report/hot.json");
 			}
 		}
 

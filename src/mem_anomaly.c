@@ -19,6 +19,7 @@
 #include "mem_anomaly.skel.h"
 #include "../include/mem_anomaly.h"
 #include "../include/report_json.h"
+#include "../include/storage.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
 #include "../include/common.h"
@@ -1261,6 +1262,7 @@ int run_mem(int argc, char **argv)
 					  tot_reclaim_ns, tot_reclaim_cnt, (double)interval,
 					  avail_pct_lo, majfault_hi);
 			json_to_markdown("report/mem.json", "report/mem.md");
+			storage_save_from_json("mem", "report/mem.json");
 		}
 		break;
 	}

@@ -21,6 +21,8 @@
 #include "../include/config.h"
 #include "../include/storage.h"
 
+int run_history(int argc, char **argv);
+int run_correlate(int argc, char **argv);
 
 // 模块注册表 
 typedef struct {
@@ -35,8 +37,8 @@ static module_t modules[] = {
 	{"mem",  "内存异常检测",            run_mem},
 	{"lock", "锁竞争检测",            run_lock},
 	{"hot",       "系统调用热点分析",         run_syscall},
-	{"history",   "历史趋势查询",              NULL},
-	{"correlate", "多维关联分析",              NULL},
+	{"history",   "历史趋势查询",              run_history},
+	{"correlate", "多维关联分析",              run_correlate},
 	{NULL, NULL, NULL},
 };
 
@@ -59,8 +61,6 @@ int main(int argc, char **argv)
 	const char *prog = argv[0];
 
 	config_init();
-	storage_init("report/eebpf.db");
-	atexit(storage_close);
 
 	if (argc < 2) {
 		print_help(prog);
@@ -75,6 +75,9 @@ int main(int argc, char **argv)
 		print_help(prog);
 		return 0;
 	}
+
+	storage_init("report/eebpf.db");
+	atexit(storage_close);
 
 	const char *cmd = argv[1];
 	for (module_t *m = modules; m->name; m++) {

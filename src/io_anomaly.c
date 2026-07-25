@@ -15,6 +15,7 @@
 #include "hotfile.skel.h"
 #include "../include/io_anomaly.h"
 #include "../include/report_json.h"
+#include "../include/storage.h"
 #include "../include/report_md.h"
 #include "../include/utils.h"
 #include "../include/common.h"
@@ -1380,6 +1381,7 @@ int run_io(int argc, char **argv)
 	if (json_output) {
 		print_io_json_report(stats_fd, hotfile_stats_fd, block_hist_fd, (double)interval);
 		json_to_markdown("report/io.json", "report/io.md");
+		storage_save_from_json("io", "report/io.json");
 	}
 
 	fprintf(stderr, "[*] 正在退出...\n");
