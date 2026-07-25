@@ -22,8 +22,7 @@
 #include "../include/common.h"
 #include "../include/config.h"
 
-#define MIN_SAMPLES_FOR_PCT  100   // P99/P99.9 需要的最少样本数
-#define MIN_FILE_IOS_FOR_HOT 50    // 热点集中判定需要的最少文件IO数
+// min_samples_for_pct / min_file_ios_for_hot 移至 eebpf.conf (g_cfg)
 #define MAX_ACTIVE_DEVS 256
 #define MAX_THRASH_ENTRIES 5
 
@@ -239,15 +238,15 @@ static void print_io_report(FILE *out, int stats_fd, int req_fd, double interval
 		double max_lat_us = (double)val.max_lat_ns / 1000.0;
 		double p99_us = calc_percentile(val.lat_hist, 16, total_ios, 0.99);
 		double p999_us = calc_percentile(val.lat_hist, 16, total_ios, 0.999);
-		int enough_samples = (total_ios >= MIN_SAMPLES_FOR_PCT);
+		int enough_samples = (total_ios >= g_cfg.min_samples_for_pct);
 		char p99_str[32], p999_str[32];
 
 		if (enough_samples) {
 			snprintf(p99_str, sizeof(p99_str), "%7.1f us", p99_us);
 			snprintf(p999_str, sizeof(p999_str), "%7.1f us", p999_us);
 		} else {
-			snprintf(p99_str, sizeof(p99_str), "   N/A (样本<100)");
-			snprintf(p999_str, sizeof(p999_str), "   N/A (样本<100)");
+			snprintf(p99_str, sizeof(p99_str), "  N/A (样本<%d)", g_cfg.min_samples_for_pct);
+			snprintf(p999_str, sizeof(p999_str), "  N/A (样本<%d)", g_cfg.min_samples_for_pct);
 		}
 
 		// 缓存命中率估算
@@ -575,7 +574,7 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
       ? (double)val.cache_miss_count / (double)val.total_rd_blks * 100.0 : 0;
 
     char p99_str_diag[32], p999_str_diag[32];
-    if (total_ios >= MIN_SAMPLES_FOR_PCT) {
+    if (total_ios >= g_cfg.min_samples_for_pct) {
       snprintf(p99_str_diag, sizeof(p99_str_diag), "%6.1f us", p99_us);
       snprintf(p999_str_diag, sizeof(p999_str_diag), "%6.1f us", p999_us);
     } else {
@@ -615,13 +614,13 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     baseline_verdict_t v;
     storage_check_baseline_anomaly("io", io_target, "P99 时延",
                                    p99_us, p99_hi, &v);
-    int flag_lat_fixed = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+    int flag_lat_fixed = (total_ios >= g_cfg.min_samples_for_pct && p99_us > p99_hi);
     int flag_lat_baseline = v.baseline_triggered;
     int flag_lat  = flag_lat_fixed || flag_lat_baseline;
     int flag_qd   = (qd_usage_pct > 70.0);
     int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
     int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
-    int flag_hot   = (total_file_ios >= MIN_FILE_IOS_FOR_HOT && top3_pct > 70.0);
+    int flag_hot   = (total_file_ios >= g_cfg.min_file_ios_for_hot && top3_pct > 70.0);
     triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
 
     if (triggers == 0) { key = next_key; continue; }
@@ -1099,13 +1098,13 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			baseline_verdict_t v;
 			storage_check_baseline_anomaly("io", io_target, "P99 时延",
 			                               p99_us, p99_hi, &v);
-			int flag_lat_fixed = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+			int flag_lat_fixed = (total_ios >= g_cfg.min_samples_for_pct && p99_us > p99_hi);
 			int flag_lat_baseline = v.baseline_triggered;
 			int flag_lat = flag_lat_fixed || flag_lat_baseline;
 			int flag_qd   = (qd_usage_pct > 70.0);
 			int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
 			int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
-			int flag_hot   = (diag_total_ios >= MIN_FILE_IOS_FOR_HOT && diag_top3_pct > 70.0);
+			int flag_hot   = (diag_total_ios >= g_cfg.min_file_ios_for_hot && diag_top3_pct > 70.0);
 			int triggers = flag_lat + flag_qd + flag_qwait + flag_cache + flag_hot;
 
 			if (triggers == 0) { ddev = ddev_next; continue; }
