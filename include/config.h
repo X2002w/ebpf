@@ -37,6 +37,12 @@ typedef struct {
 
 	// 存储
 	int storage_enabled;
+
+	// 基线自适应判定
+	int    baseline_enabled;      // 开关: 历史样本充足时用基线替代固定阈值
+	int    baseline_min_samples;  // 启用基线所需最小样本数
+	double baseline_z_score;      // 阈值 = mean + z * stddev
+	int    baseline_window_sec;   // 基线回看窗口 (秒)
 } eebpf_config;
 
 extern eebpf_config g_cfg;
