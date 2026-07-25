@@ -7,8 +7,6 @@ License: GPL-2.0
 URL: https://github.com/X2002w/ebpf
 Source0: %{name}-%{version}.tar.gz
 
-BuildRequires: clang, libbpf-devel, elfutils-libelf-devel, zlib-devel
-
 %description
 eebpf is a lightweight system observability tool based on eBPF
 (libbpf + CO-RE). It covers 5 anomaly scenarios: CPU, I/O, memory,
@@ -16,8 +14,11 @@ lock contention, and syscall hotspots. Outputs structured Markdown
 diagnosis reports and JSON data. Requires Linux kernel 6.6+ with
 CONFIG_DEBUG_INFO_BTF.
 
+%prep
+%setup -q
+
 %build
-make
+# 使用预编译二进制，跳过 make
 
 %install
 make install-bin install-conf install-ai DESTDIR=%{buildroot} PREFIX=/usr
