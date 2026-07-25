@@ -37,6 +37,7 @@ sudo ./scripts/reproduce.sh
 | 2 | I/O 抖动 | fio randrw iodepth=64 direct=1 | io | I/O |
 | 3 | 内存压力 | stress-ng --vm 4 80% --vm-keep | mem | 内存 |
 | 4 | 锁竞争 | stress-ng --mutex 8 | lock | 锁竞争 |
+| 5 | 系统调用热点 | stress-ng --cpu 4 matrixprod | hot | 高频调用 |
 
 ### 3.2 输出文件
 
@@ -46,6 +47,7 @@ sudo ./scripts/reproduce.sh
 | `report/io_demo.json` | I/O 场景 JSON 诊断报告 |
 | `report/mem_demo.json` | 内存场景 JSON 诊断报告 |
 | `report/lock_demo.json` | 锁竞争场景 JSON 诊断报告 |
+| `report/hot_demo.json` | 系统调用热点 JSON 诊断报告 |
 | `report/demo_summary.md` | 汇总表格，含匹配结果 |
 
 ### 3.3 结果示例
@@ -56,6 +58,7 @@ sudo ./scripts/reproduce.sh
 | I/O 随机读写抖动 | io   | I/O 延迟抖动               | 1      | ✓        |
 | 内存压力与抖动   | mem  | 内存抖动 (缺页颠簸)        | 1      | ✓        |
 | futex 锁竞争     | lock | 锁竞争 (热点锁集中)        | 18     | ✓        |
+| 系统调用热点     | hot  | 高频调用                   | -      | ✓        |
 
 ## 4.0 手动单项测试
 
@@ -112,10 +115,14 @@ sudo ./eebpf lock -d 30
 ### 4.5 系统调用热点分析
 
 ```bash
+# 终端 1: 注入系统调用密集负载 (CPU 密集计算会触发大量 syscall)
+stress-ng --cpu 4 --cpu-method matrixprod --timeout 60s
+
+# 终端 2: 运行 eebpf
 sudo ./eebpf hot -d 30
 ```
 
-**预期**: 输出高频/高耗时/高错误率系统调用 Top-N 列表。
+**预期**: JSON 输出高频/高耗时系统调用 Top-N 列表，`subtype` 包含 "高频调用" 或 "高耗时"。
 
 ## 5.0 eebpf程序性能基准测试
 
