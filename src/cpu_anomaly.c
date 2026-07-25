@@ -237,7 +237,168 @@ static void print_call_stack(FILE *out, int stackmap_fd, __s32 stack_id,
 	}
 }
 
-// 打印单个时间窗口的文本诊断报告 
+// CPU 异常分类结果 — 文本/JSON 共用, 避免两套判定逻辑漂移
+// evidence[] 是固定 8 槽, ev_count 记实际条数
+typedef struct {
+	int is_anomaly;
+	const char *subtype;
+	const char *root_cause;
+	const char *suggestion;
+	char evidence[8][256];
+	int ev_count;
+} cpu_diag_t;
+
+// 给定一个进程的派生指标, 输出统一的判定结果 (is_anomaly + subtype + root_cause
+// + suggestion + evidence[]). 5 个分支按优先级串行: CPU 高占用 → 锁竞争 → 调度延迟
+// → 切换风暴 → 核间迁移. 后续分支若已置 is_anomaly 不再覆盖 subtype, 仅补 evidence.
+// ncpu/sys 用于证据文本中的负载与 CPU 饱和度对比.
+static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
+                                 double cswitch_pm, double invol_pm, double vol_pm,
+                                 double vol_ratio, double avg_delay_us,
+                                 double stack_concentration,
+                                 __u64 total_stack_samples,
+                                 __u64 migrate_count,
+                                 __u64 futex_wait_count, double futex_avg_us,
+                                 int ncpu, const struct sys_metrics *sys,
+                                 cpu_diag_t *d)
+{
+	memset(d, 0, sizeof(*d));
+
+	// 分支1: CPU 高占用
+	if (cpu_pct > cpu_threshold) {
+		d->is_anomaly = 1;
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "系统负载 %.2f, RunQ 深度 %d, 阻塞 %d",
+		         sys->load1, sys->procs_running, sys->procs_blocked);
+
+		// 1a: 切换极少 + 栈高度集中 → busy loop
+		if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+		    stack_concentration > STACK_CONC_RATIO) {
+			d->subtype = "CPU异常占用 (busy loop)";
+			d->root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
+			d->suggestion = "perf top 定位到具体函数后检查循环退出条件；"
+			                "考虑添加 usleep/yield";
+		}
+		// 1b: 切换极少但无栈数据 → "疑似 busy loop"
+		else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
+		         total_stack_samples == 0) {
+			d->subtype = "CPU异常占用 (疑为 busy loop)";
+			d->root_cause = "进程切换频率极低 (< 5000/min)，疑似 busy loop；"
+			                "建议启用栈采样确认";
+			d->suggestion = "使用 --profile 启用栈采样定位热点函数；"
+			                "或使用 perf top 观察";
+		}
+		// 1c: 被动切换占主导 → CPU 密集计算
+		else if (invol_pm > vol_pm * 10) {
+			d->subtype = "CPU异常占用 (CPU 密集计算)";
+			d->root_cause = "用户态 CPU 密集型计算致 CPU 饱和，"
+			                "进程长期占核被反复抢占";
+			d->suggestion = "使用 perf top/flamegraph 分析热点函数；"
+			                "考虑 cgroup CPU limit 隔离";
+			snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+			         "被动切换 %.0f/min 占主导 (主动 %.0f/min)，证实 CPU 争抢",
+			         invol_pm, vol_pm);
+			if (sys->load1 > ncpu * 1.5)
+				snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+				         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
+				         sys->load1, ncpu);
+		}
+		// 1d: 其他高 CPU
+		else {
+			d->subtype = "CPU异常占用";
+			d->root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
+			d->suggestion = "使用 perf top/flamegraph 分析热点函数；"
+			                "考虑 cgroup CPU limit 隔离";
+		}
+	}
+
+	// 分支2: 线程竞争 / 锁竞争
+	if (!d->is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
+	    cswitch_pm > CSWITCH_WARN_PER_MIN) {
+		d->is_anomaly = 1;
+		d->subtype = "线程/锁竞争";
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "RunQ 深度瞬时 %d, 负载 %.2f — CPU 未饱和但切换频繁",
+		         sys->procs_running, sys->load1);
+		if (futex_wait_count > 0) {
+			d->root_cause = "自愿切换占比高 + futex 等待显著，"
+			                "多线程锁竞争或同步等待";
+			d->suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式";
+			snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+			         "自愿切换占比 %.0f%% (%.0f/min)，futex 等待 %llu 次/avg %.0fus",
+			         vol_ratio * 100, vol_pm, futex_wait_count, futex_avg_us);
+		} else {
+			d->root_cause = "自愿切换占比高，疑似锁等待或 I/O 阻塞";
+			d->suggestion = "使用 off-CPU 火焰图分析阻塞原因；"
+			                "考虑 strace 观察系统调用模式";
+			snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+			         "自愿切换占比 %.0f%% (%.0f/min)，总切换 %.0f/min",
+			         vol_ratio * 100, vol_pm, cswitch_pm);
+		}
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "CPU 占用仅 %.1f%%，排除纯计算热点，指向等待/阻塞模式", cpu_pct);
+	}
+
+	// 分支3: 调度延迟异常
+	if (avg_delay_us > SCHED_DELAY_CRIT_US) {
+		if (!d->is_anomaly) {
+			d->is_anomaly = 1;
+			d->subtype = "调度延迟异常";
+		}
+		if (!d->root_cause)
+			d->root_cause = "调度延迟显著偏高，CPU 资源竞争或 run queue 拥堵";
+		if (!d->suggestion)
+			d->suggestion = "检查 run queue 深度和 CPU 负载；"
+			                "考虑增加 CPU 资源或调整进程优先级";
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "平均调度延迟 %.0fus 超过严重阈值 %dus",
+		         avg_delay_us, SCHED_DELAY_CRIT_US);
+	} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
+		if (!d->is_anomaly) {
+			d->is_anomaly = 1;
+			d->subtype = "调度延迟偏高";
+			d->root_cause = "CPU 负载较高致调度延迟升高";
+			d->suggestion = "监控 run queue 深度变化趋势";
+		}
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "平均调度延迟 %.0fus 超过警告阈值 %dus",
+		         avg_delay_us, SCHED_DELAY_WARN_US);
+	}
+
+	// 分支4: 上下文切换风暴
+	if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !d->is_anomaly) {
+		d->is_anomaly = 1;
+		d->subtype = "上下文切换风暴";
+		d->root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
+		d->suggestion = "检查线程池大小；排查不必要的 wakeup；"
+		                "使用 off-CPU 分析定位阻塞源";
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "上下文切换 %.0f/min 达风暴级别 (>%d/min)",
+		         cswitch_pm, CSWITCH_CRIT_PER_MIN);
+	}
+
+	// 分支5: 核间迁移异常
+	if (migrate_count > (__u64)cswitch_pm / 2 && migrate_count > 100) {
+		if (!d->is_anomaly) {
+			d->is_anomaly = 1;
+			if (!d->subtype) d->subtype = "核间迁移异常";
+		}
+		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+		         "核间迁移 %llu 次，占比过高 (>50%% 切换)，放大调度开销",
+		         migrate_count);
+		if (!d->suggestion)
+			d->suggestion = "检查 CPU affinity 设置；"
+			                "考虑 taskset/cpuset 绑定关键进程";
+	}
+
+	// 非异常的 CPU 偏高进程, 填充默认 subtype (文本/JSON 都会显示)
+	if (!d->is_anomaly && !d->subtype && cpu_pct >= 50.0)
+		d->subtype = "注意: CPU 偏高 (未达异常阈值)";
+}
+
+// 打印单个时间窗口的文本诊断报告
 static void print_report(FILE *out,
                          struct proc_info *procs,
                          int count,
@@ -345,14 +506,6 @@ static void print_report(FILE *out,
 			? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0
 			: 0;
 
-		// 判定异常 & 根因分类
-		int is_anomaly = 0;
-		const char *subtype = NULL;
-		const char *root_cause = NULL;
-		const char *suggestion = NULL;
-		char evidence[6][256];
-		int ev_count = 0;
-
 		// 判定栈集中度
 		double stack_concentration = 0;
 		if (total_stack_samples > 0) {
@@ -360,142 +513,19 @@ static void print_report(FILE *out,
 			                      (double)total_stack_samples;
 		}
 
-		// 分支1: CPU 高占用
-		if (cpu_pct > cpu_threshold) {
-			is_anomaly = 1;
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
-
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-		         "系统负载(1min 内平均) %.2f, RunQ 深度 %d, 阻塞 %d",
-		         sys.load1, sys.procs_running, sys.procs_blocked);
-
-			// 1a: 切换极少 + 栈高度集中 → busy loop
-			if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-			    stack_concentration > STACK_CONC_RATIO) {
-				subtype = "CPU异常占用 (busy loop)";
-				root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
-				suggestion = "perf top 定位到具体函数后检查循环退出条件；"
-				             "考虑添加 usleep/yield";
-			}
-			// 1b: 切换极少但无栈数据 → "疑似 busy loop"
-			else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-			         total_stack_samples == 0) {
-				subtype = "CPU异常占用 (疑为 busy loop)";
-				root_cause = "进程切换频率极低 (< 5000/min)，疑似 busy loop；"
-				             "建议启用栈采样确认";
-				suggestion = "使用 --profile 启用栈采样定位热点函数；"
-				             "或使用 perf top 观察";
-			}
-			// 1c: 被动切换占主导 → CPU 密集计算
-			else if (s->cswitch_involuntary > s->cswitch_voluntary * 10) {
-				subtype = "CPU异常占用 (CPU 密集计算)";
-				root_cause = "用户态 CPU 密集型计算致 CPU 饱和，"
-				             "进程长期占核被反复抢占";
-				suggestion = "使用 perf top/flamegraph 分析热点函数；"
-				             "考虑 cgroup CPU limit 隔离";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "被动切换 %.0f/min 占绝对主导 (主动 %.0f/min)，证实 CPU 争抢",
-				         invol_pm, vol_pm);
-				if (sys.load1 > ncpu * 1.5)
-					snprintf(evidence[ev_count++], sizeof(evidence[0]),
-					         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
-					         sys.load1, ncpu);
-			}
-			// 1d: 其他高 CPU
-			else {
-				subtype = "CPU异常占用";
-				root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
-				suggestion = "使用 perf top/flamegraph 分析热点函数；"
-				             "考虑 cgroup CPU limit 隔离";
-			}
-		}
-
-		// 分支2: 线程竞争 / 锁竞争
-		if (!is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
-		    cswitch_pm > CSWITCH_WARN_PER_MIN) {
-			is_anomaly = 1;
-			subtype = "线程/锁竞争";
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "RunQ 深度瞬时 %d, 负载 %.2f — CPU 未饱和但切换频繁",
-			         sys.procs_running, sys.load1);
-			if (s->futex_wait_count > 0) {
-				root_cause = "自愿切换占比高 + futex 等待显著，"
-				             "多线程锁竞争或同步等待";
-				suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "自愿切换占比 %.0f%% (%.0f/min)，futex 等待 %llu 次/avg %.0fus",
-				         vol_ratio * 100, vol_pm,
-				         s->futex_wait_count, futex_avg_us);
-			} else {
-				root_cause = "自愿切换占比高，疑似锁等待或 I/O 阻塞";
-				suggestion = "使用 off-CPU 火焰图分析阻塞原因；"
-				             "考虑 strace 观察系统调用模式";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "自愿切换占比 %.0f%% (%.0f/min)，总切换 %.0f/min",
-				         vol_ratio * 100, vol_pm, cswitch_pm);
-			}
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "CPU 占用仅 %.1f%%，排除纯计算热点，指向等待/阻塞模式",
-			         cpu_pct);
-		}
-
-		// 分支3: 调度延迟异常
-		if (avg_delay_us > SCHED_DELAY_CRIT_US) {
-			if (!is_anomaly) {
-				is_anomaly = 1;
-				subtype = "调度延迟异常";
-			}
-			if (!root_cause)
-				root_cause = "调度延迟显著偏高，CPU 资源竞争或 run queue 拥堵";
-			if (!suggestion)
-				suggestion = "检查 run queue 深度和 CPU 负载；"
-				             "考虑增加 CPU 资源或调整进程优先级";
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "平均调度延迟 %.0fus 超过严重阈值 %dus",
-			         avg_delay_us, SCHED_DELAY_CRIT_US);
-		} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
-			if (!is_anomaly) {
-				is_anomaly = 1;
-				subtype = "调度延迟偏高";
-				root_cause = "CPU 负载较高致调度延迟升高";
-				suggestion = "监控 run queue 深度变化趋势";
-			}
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "平均调度延迟 %.0fus 超过警告阈值 %dus",
-			         avg_delay_us, SCHED_DELAY_WARN_US);
-		}
-
-		// 分支4: 上下文切换风暴
-		if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !is_anomaly) {
-			is_anomaly = 1;
-			subtype = "上下文切换风暴";
-			root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
-			suggestion = "检查线程池大小；排查不必要的 wakeup；"
-			             "使用 off-CPU 分析定位阻塞源";
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "上下文切换 %.0f/min 达风暴级别 (>%d/min)",
-			         cswitch_pm, CSWITCH_CRIT_PER_MIN);
-		}
-
-		// 分支5: 核间迁移异常
-		if (s->migrate_count > (__u64)cswitch_pm / 2 && s->migrate_count > 100) {
-			if (!is_anomaly) {
-				is_anomaly = 1;
-				if (!subtype) subtype = "核间迁移异常";
-			}
-			snprintf(evidence[ev_count++], sizeof(evidence[0]),
-			         "核间迁移 %llu 次，占比过高 (>50%% 切换)，放大调度开销",
-			         s->migrate_count);
-			if (!suggestion) {
-				suggestion = "检查 CPU affinity 设置；"
-				             "考虑 taskset/cpuset 绑定关键进程";
-			}
-		}
-
-		// 非异常的 CPU 偏高进程，填充默认 subtype
-		if (!is_anomaly && !subtype && cpu_pct >= 50.0)
-			subtype = "注意: CPU 偏高 (未达异常阈值)";
+		// 统一调用 classify_cpu_anomaly — 文本/JSON 共用同一套判定
+		cpu_diag_t diag;
+		classify_cpu_anomaly(cpu_pct, cpu_threshold,
+		                     cswitch_pm, invol_pm, vol_pm,
+		                     vol_ratio, avg_delay_us,
+		                     stack_concentration, total_stack_samples,
+		                     s->migrate_count,
+		                     s->futex_wait_count, futex_avg_us,
+		                     ncpu, &sys, &diag);
+		int is_anomaly = diag.is_anomaly;
+		const char *subtype = diag.subtype;
+		const char *root_cause = diag.root_cause;
+		const char *suggestion = diag.suggestion;
 
 		// 按 CPU%>50% 或异常才输出详情
 		if (cpu_pct < 50.0 && !is_anomaly) continue;
@@ -551,10 +581,10 @@ static void print_report(FILE *out,
 		fprintf(out, "\n");
 
 		// 诊断信息 (仅异常进程)
-		if (is_anomaly && ev_count > 0) {
+		if (is_anomaly && diag.ev_count > 0) {
 			fprintf(out, "  诊断证据:\n");
-			for (int e = 0; e < ev_count; e++)
-				fprintf(out, "    • %s\n", evidence[e]);
+			for (int e = 0; e < diag.ev_count; e++)
+				fprintf(out, "    • %s\n", diag.evidence[e]);
 			fprintf(out, "\n");
 			if (root_cause)
 				fprintf(out, "  疑似根因: %s\n", root_cause);
@@ -778,123 +808,19 @@ static void print_json_report(struct proc_info *procs, int count,
 			double futex_avg_us = (s->futex_wait_count > 0)
 				? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0 : 0;
 
-			int is_anomaly = 0;
-			const char *subtype = NULL;
-			const char *root_cause = NULL;
-			const char *suggestion = NULL;
-			char evidence[8][256];
-			int ev_count = 0;
-
-			if (cpu_pct > cpu_threshold) {
-				is_anomaly = 1;
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "系统负载 %.2f, RunQ 深度 %d, 阻塞 %d",
-				         sys.load1, sys.procs_running, sys.procs_blocked);
-
-				if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-				    stack_concentration > STACK_CONC_RATIO) {
-					subtype = "CPU异常占用 (busy loop)";
-					root_cause = "进程陷入单点 busy loop，切换极少且栈高度集中在一处";
-					suggestion = "perf top 定位到具体函数后检查循环退出条件；考虑添加 usleep/yield";
-				} else if (cswitch_pm < BUSYLOOP_CS_PER_MIN &&
-				           total_stack_samples == 0) {
-					subtype = "CPU异常占用 (疑为 busy loop)";
-					root_cause = "进程切换频率极低，疑似 busy loop；建议启用栈采样确认";
-					suggestion = "使用 --profile 启用栈采样定位热点函数；或使用 perf top 观察";
-				} else if (s->cswitch_involuntary > s->cswitch_voluntary * 10) {
-					subtype = "CPU异常占用 (CPU 密集计算)";
-					root_cause = "用户态 CPU 密集型计算致 CPU 饱和，进程长期占核被反复抢占";
-					suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
-					snprintf(evidence[ev_count++], sizeof(evidence[0]),
-					         "被动切换 %.0f/min 占主导 (主动 %.0f/min)，证实 CPU 争抢",
-					         invol_pm, vol_pm);
-					if (sys.load1 > ncpu * 1.5)
-						snprintf(evidence[ev_count++], sizeof(evidence[0]),
-						         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
-						         sys.load1, ncpu);
-				} else {
-					subtype = "CPU异常占用";
-					root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
-					suggestion = "使用 perf top/flamegraph 分析热点函数；考虑 cgroup CPU limit 隔离";
-				}
-			}
-
-			if (!is_anomaly && vol_ratio > VOLUNTARY_RATIO_HIGH &&
-			    cswitch_pm > CSWITCH_WARN_PER_MIN) {
-				is_anomaly = 1;
-				subtype = "线程/锁竞争";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "RunQ 瞬时 %d, 负载 %.2f — CPU 未饱和但切换频繁",
-				         sys.procs_running, sys.load1);
-				if (s->futex_wait_count > 0) {
-					root_cause = "自愿切换占比高 + futex 等待显著，多线程锁竞争或同步等待";
-					suggestion = "使用 perf lock 分析锁热点；排查 futex 等待模式";
-					snprintf(evidence[ev_count++], sizeof(evidence[0]),
-					         "自愿切换占比 %.0f%% (%.0f/min)，futex 等待 %llu 次/avg %.0fus",
-					         vol_ratio * 100, vol_pm,
-					         s->futex_wait_count, futex_avg_us);
-				} else {
-					root_cause = "自愿切换占比高，疑似锁等待或 I/O 阻塞";
-					suggestion = "使用 off-CPU 火焰图分析阻塞原因；考虑 strace 观察系统调用模式";
-					snprintf(evidence[ev_count++], sizeof(evidence[0]),
-					         "自愿切换占比 %.0f%% (%.0f/min)，总切换 %.0f/min",
-					         vol_ratio * 100, vol_pm, cswitch_pm);
-				}
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "CPU 占用仅 %.1f%%，排除纯计算热点，指向等待/阻塞模式", cpu_pct);
-			}
-
-			if (avg_delay_us > SCHED_DELAY_CRIT_US) {
-				if (!is_anomaly) {
-					is_anomaly = 1;
-					subtype = "调度延迟异常";
-				}
-				if (!root_cause)
-					root_cause = "调度延迟显著偏高，CPU 资源竞争或 run queue 拥堵";
-				if (!suggestion)
-					suggestion = "检查 run queue 深度和 CPU 负载；考虑增加 CPU 资源或调整进程优先级";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "平均调度延迟 %.0fus 超过严重阈值 %dus",
-				         avg_delay_us, SCHED_DELAY_CRIT_US);
-			} else if (avg_delay_us > SCHED_DELAY_WARN_US) {
-				if (!is_anomaly) {
-					is_anomaly = 1;
-					subtype = "调度延迟偏高";
-					root_cause = "CPU 负载较高致调度延迟升高";
-					suggestion = "监控 run queue 深度变化趋势";
-				}
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "平均调度延迟 %.0fus 超过警告阈值 %dus",
-				         avg_delay_us, SCHED_DELAY_WARN_US);
-			}
-
-			if (cswitch_pm > CSWITCH_CRIT_PER_MIN && !is_anomaly) {
-				is_anomaly = 1;
-				subtype = "上下文切换风暴";
-				root_cause = "上下文切换频率极高，多线程争用或过度 I/O 唤醒";
-				suggestion = "检查线程池大小；排查不必要的 wakeup；使用 off-CPU 分析定位阻塞源";
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "上下文切换 %.0f/min 达风暴级别 (>%d/min)",
-				         cswitch_pm, CSWITCH_CRIT_PER_MIN);
-			}
-
-			if (s->migrate_count > (unsigned long long)cswitch_pm / 2 &&
-			    s->migrate_count > 100) {
-				if (!is_anomaly) {
-					is_anomaly = 1;
-					if (!subtype) subtype = "核间迁移异常";
-				}
-				snprintf(evidence[ev_count++], sizeof(evidence[0]),
-				         "核间迁移 %llu 次，占比过高，放大调度开销", s->migrate_count);
-				if (!suggestion)
-					suggestion = "检查 CPU affinity 设置；考虑 taskset/cpuset 绑定关键进程";
-			}
-
-			// 非异常的 CPU 偏高进程，填充默认 subtype
-			if (!is_anomaly && !subtype && cpu_pct >= 50.0)
-				subtype = "注意: CPU 偏高 (未达异常阈值)";
+			// 统一调用 classify_cpu_anomaly — 文本/JSON 共用同一套判定
+			cpu_diag_t diag;
+			classify_cpu_anomaly(cpu_pct, cpu_threshold,
+			                     cswitch_pm, invol_pm, vol_pm,
+			                     vol_ratio, avg_delay_us,
+			                     stack_concentration, total_stack_samples,
+			                     s->migrate_count,
+			                     s->futex_wait_count, futex_avg_us,
+			                     ncpu, &sys, &diag);
+			int is_anomaly = diag.is_anomaly;
+			const char *subtype = diag.subtype;
+			const char *root_cause = diag.root_cause;
+			const char *suggestion = diag.suggestion;
 
 			// 跳过非异常且 CPU<50% 的进程
 			if (!is_anomaly && cpu_pct < 50.0) continue;
@@ -952,10 +878,10 @@ static void print_json_report(struct proc_info *procs, int count,
 
 			// evidence
 			json_arr_begin(out, 5, "evidence");
-			for (int e = 0; e < ev_count; e++) {
+			for (int e = 0; e < diag.ev_count; e++) {
 				json_indent(out, 6);
-				json_str(out, evidence[e]);
-				fprintf(out, "%s\n", e < ev_count - 1 ? "," : "");
+				json_str(out, diag.evidence[e]);
+				fprintf(out, "%s\n", e < diag.ev_count - 1 ? "," : "");
 			}
 			json_arr_end(out, 5, 1);
 
