@@ -436,6 +436,34 @@ int storage_get_metric_baseline(const char *module, const char *target,
 	return n;
 }
 
+// 双阈值 OR 判定: 固定阈值 OR 基线突增
+// 各模块共用, 避免重复实现判定逻辑
+int storage_check_baseline_anomaly(const char *module, const char *target,
+                                   const char *metric_key, double value,
+                                   double fixed_threshold,
+                                   baseline_verdict_t *v)
+{
+	memset(v, 0, sizeof(*v));
+
+	int fixed_hit = (value > fixed_threshold);
+	int baseline_hit = 0;
+
+	if (g_cfg.baseline_enabled && storage_is_enabled() && target) {
+		baseline_t bl;
+		if (storage_get_metric_baseline(module, target, metric_key,
+		                                g_cfg.baseline_window_sec, &bl) >= 0 &&
+		    bl.count >= g_cfg.baseline_min_samples && bl.stddev > 0) {
+			v->baseline_threshold = bl.mean + g_cfg.baseline_z_score * bl.stddev;
+			if (value > v->baseline_threshold)
+				baseline_hit = 1;
+		}
+	}
+
+	v->is_anomaly = fixed_hit || baseline_hit;
+	v->baseline_triggered = baseline_hit && !fixed_hit;
+	return v->is_anomaly;
+}
+
 int storage_exec_sql(const char *sql)
 {
 	if (!g_db) {

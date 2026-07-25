@@ -266,26 +266,16 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 {
 	memset(d, 0, sizeof(*d));
 
-	// 基线自适应: 双阈值 OR 逻辑
-	//   路径 A: cpu_pct > cpu_threshold (固定阈值, 强信号)
-	//   路径 B: cpu_pct > baseline_mean + z*std (基线突增, 弱信号)
-	// 任一满足即判定 CPU 异常。基线不足 min_samples 时仅走路径 A。
-	// 注意: 基线突增单独触发时, subtype 标注 "基线突增" 以区分固定阈值触发。
-	double baseline_threshold = 0;
-	int have_baseline = 0;
-	if (g_cfg.baseline_enabled && storage_is_enabled() && target) {
-		baseline_t bl;
-		int bn = storage_get_metric_baseline("cpu", target, "CPU 占用",
-		                                     g_cfg.baseline_window_sec, &bl);
-		if (bn >= 0 && bl.count >= g_cfg.baseline_min_samples && bl.stddev > 0) {
-			baseline_threshold = bl.mean + g_cfg.baseline_z_score * bl.stddev;
-			have_baseline = 1;
-		}
-	}
+	// 基线自适应: 双阈值 OR 逻辑 (固定阈值 OR 基线突增)
+	// 走 storage_check_baseline_anomaly 统一封装, 与其他模块共用
+	baseline_verdict_t v;
+	storage_check_baseline_anomaly("cpu", target, "CPU 占用",
+	                               cpu_pct, cpu_threshold, &v);
+	int cpu_high_fixed = (cpu_pct > cpu_threshold);
+	int cpu_high_baseline = v.baseline_triggered;
+	double baseline_threshold = v.baseline_threshold;
 
 	// 分支1: CPU 高占用 (固定阈值 OR 基线突增)
-	int cpu_high_fixed = (cpu_pct > cpu_threshold);
-	int cpu_high_baseline = (have_baseline && cpu_pct > baseline_threshold);
 	if (cpu_high_fixed || cpu_high_baseline) {
 		d->is_anomaly = 1;
 		if (cpu_high_fixed)
