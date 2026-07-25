@@ -40,6 +40,11 @@ jobs:
       - name: 打包 deb
         run: make deb
 
+      - name: 打包 rpm
+        run: |
+          sudo apt-get install -y --no-install-recommends rpm
+          make rpm
+
       - name: 安装并验证
         run: |
           sudo apt-get install -y --no-install-recommends ./eebpf_*.deb
@@ -51,11 +56,13 @@ jobs:
           sudo eebpf hot  -i 1 -d 1 -j
           sudo eebpf lock -i 1 -d 1 -p 0 -j
 
-      - name: 上传 deb
+      - name: 上传 deb & rpm
         uses: actions/upload-artifact@v4
         with:
           name: eebpf-amd64
-          path: eebpf_*.deb
+          path: |
+            eebpf_*.deb
+            eebpf-*.rpm
 
   build-arm64:
     runs-on: ubuntu-24.04-arm
@@ -86,6 +93,11 @@ jobs:
       - name: 打包 deb
         run: make deb
 
+      - name: 打包 rpm
+        run: |
+          sudo apt-get install -y --no-install-recommends rpm
+          make rpm
+
       - name: 安装并验证
         run: |
           sudo apt-get install -y --no-install-recommends ./eebpf_*.deb
@@ -97,11 +109,13 @@ jobs:
           sudo eebpf hot  -i 1 -d 1 -j
           sudo eebpf lock -i 1 -d 1 -p 0 -j
 
-      - name: 上传 deb
+      - name: 上传 deb & rpm
         uses: actions/upload-artifact@v4
         with:
           name: eebpf-arm64
-          path: eebpf_*.deb
+          path: |
+            eebpf_*.deb
+            eebpf-*.rpm
 
   release:
     needs: [build-amd64, build-arm64]
@@ -126,6 +140,8 @@ jobs:
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: eebpf_*.deb
+          files: |
+            eebpf_*.deb
+            eebpf-*.rpm
           generate_release_notes: true
           body_path: docs/release-notes/${{ github.ref_name }}.md
