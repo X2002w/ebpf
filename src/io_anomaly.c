@@ -82,6 +82,7 @@ struct thrash_entry {
 };
 
 #include "../include/utils.h"
+#include "../include/module.h"
 
 
 // 读取 /proc/partitions 获取当前活跃块设备列表，转为 dev_t 数组
@@ -1391,3 +1392,5 @@ int run_io(int argc, char **argv)
 
 	return 0;
 }
+
+REGISTER_MODULE(io, "I/O 异常检测", run_io);

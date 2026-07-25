@@ -70,6 +70,7 @@ struct stack_entry {
 };
 
 #include "../include/utils.h"
+#include "../include/module.h"
 
 // ─── libbpf 日志 ─────────────────────────────────────────────────
 static int print_fn(enum libbpf_print_level lvl, const char *fmt, va_list ap)
@@ -1254,3 +1255,5 @@ int run_cpu(int argc, char **argv)
 
 	return 0;
 }
+
+REGISTER_MODULE(cpu, "CPU 异常检测", run_cpu);

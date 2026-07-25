@@ -30,6 +30,7 @@
 #include "../include/lock_anomaly.h"
 #include "../include/common.h"
 #include "../include/config.h"
+#include "../include/module.h"
 
 // 配置常量
 #define HOT_KEY_RATIO          0.5      // 单键占比 > 50% = 热点锁
@@ -1013,3 +1014,5 @@ int run_lock(int argc, char **argv)
 
 	return 0;
 }
+
+REGISTER_MODULE(lock, "锁竞争检测", run_lock);

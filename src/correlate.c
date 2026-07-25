@@ -8,6 +8,7 @@
 #include <time.h>
 #include <getopt.h>
 #include "../include/storage.h"
+#include "../include/module.h"
 
 #define MAX_FINDINGS  64
 #define MAX_RESULTS   32
@@ -292,3 +293,5 @@ int run_correlate(int argc, char **argv)
 
 	return 0;
 }
+
+REGISTER_MODULE(correlate, "多维关联分析", run_correlate);

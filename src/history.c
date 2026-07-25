@@ -9,6 +9,7 @@
 #include <getopt.h>
 #include "../include/storage.h"
 #include "../include/report_json.h"
+#include "../include/module.h"
 
 static const char *prog;
 
@@ -108,3 +109,5 @@ int run_history(int argc, char **argv)
 
 	return 0;
 }
+
+REGISTER_MODULE(history, "历史趋势查询", run_history);

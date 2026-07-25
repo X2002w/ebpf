@@ -24,6 +24,7 @@
 #include "../include/utils.h"
 #include "../include/common.h"
 #include "../include/config.h"
+#include "../include/module.h"
 
 #define MAX_TOP            5
 #define CONSIST_TOL_PCT    15.0
@@ -1274,3 +1275,5 @@ int run_mem(int argc, char **argv)
   if (output_file) fclose(out);
   return 0;
 }
+
+REGISTER_MODULE(mem, "内存异常检测", run_mem);

@@ -13,49 +13,33 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "../include/cpu_anomaly.h"
-#include "../include/io_anomaly.h"
-#include "../include/mem_anomaly.h"
-#include "../include/lock_anomaly.h"
-#include "../include/syscall_anomaly.h"
 #include "../include/config.h"
 #include "../include/storage.h"
+#include "../include/module.h"
 
-int run_history(int argc, char **argv);
-int run_correlate(int argc, char **argv);
+// 模块注册链表
+static module_t *g_head = NULL;
 
-// 模块注册表 
-typedef struct {
-	const char *name;
-	const char *desc;
-	int (*run)(int argc, char **argv);
-} module_t;
+void module_register(module_t *m)
+{
+	m->next = g_head;
+	g_head = m;
+}
 
-static module_t modules[] = {
-	{"cpu",  "CPU 异常检测",            run_cpu},
-	{"io",   "I/O 异常检测",            run_io},
-	{"mem",  "内存异常检测",            run_mem},
-	{"lock", "锁竞争检测",            run_lock},
-	{"hot",       "系统调用热点分析",         run_syscall},
-	{"history",   "历史趋势查询",              run_history},
-	{"correlate", "多维关联分析",              run_correlate},
-	{NULL, NULL, NULL},
-};
-
-// 帮助信息 
+// 帮助信息
 static void print_help(const char *prog)
 {
 	printf("eebpf — eBPF 系统异常观测与根因定位工具\n\n");
 	printf("用法: %s <子命令> [选项]\n\n", prog);
 	printf("子命令:\n");
-	for (module_t *m = modules; m->name; m++)
+	for (module_t *m = g_head; m; m = m->next)
 		printf("  %-6s %s\n", m->name, m->desc);
 	printf("\n全局选项:\n");
 	printf("  -v, --version  显示版本信息\n");
 	printf("  -h, --help     显示帮助信息\n");
 }
 
-// main 
+// main
 int main(int argc, char **argv)
 {
 	const char *prog = argv[0];
@@ -80,7 +64,7 @@ int main(int argc, char **argv)
 	atexit(storage_close);
 
 	const char *cmd = argv[1];
-	for (module_t *m = modules; m->name; m++) {
+	for (module_t *m = g_head; m; m = m->next) {
 		if (strcmp(cmd, m->name) == 0) {
 			if (!m->run) {
 				fprintf(stderr, "eebpf: '%s' 模块尚未实现\n", cmd);

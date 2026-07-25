@@ -17,6 +17,7 @@
 #include "../include/report_md.h"
 #include "../include/common.h"
 #include "../include/config.h"
+#include "../include/module.h"
 
 struct syscall_stats {
 	unsigned long long count;
@@ -824,3 +825,5 @@ int run_syscall(int argc, char **argv)
 	if (output_file) fclose(out);
 	return 0;
 }
+
+REGISTER_MODULE(hot, "系统调用热点分析", run_syscall);
