@@ -41,6 +41,22 @@ typedef struct {
 	int  n_metrics;
 } timeline_entry_t;
 
+// 基线统计: 给定 (module, target, metric_key) 从 findings.key_metrics_json
+// 提取历史值, 返回 mean/stddev/count。target 为 NULL 时聚合整个 module
+typedef struct {
+	double mean;
+	double stddev;
+	int count;
+} baseline_t;
+
+// 基线判定结果: 双阈值 OR 逻辑的封装
+//   is_anomaly: 固定阈值 OR 基线突增, 任一满足即真
+//   baseline_triggered: 仅基线突增触发 (固定阈值未触发), 用于 subtype 区分
+typedef struct {
+	int is_anomaly;
+	int baseline_triggered;
+	double baseline_threshold;
+} baseline_verdict_t;
 
 int storage_init(const char *db_path);
 void storage_close(void);
@@ -49,6 +65,16 @@ int storage_save_from_json(const char *module, const char *json_path);
 int storage_parse_findings_json(const char *json_path, finding_t *out, int max);
 int storage_get_recent_findings(const char *module, double within_sec, finding_t *out, int max);
 int storage_get_timeline(const char *module, int limit, timeline_entry_t *out, int max);
+int storage_get_metric_baseline(const char *module, const char *target,
+                                const char *metric_key, double within_sec,
+                                baseline_t *out);
+// 双阈值 OR 判定: value > fixed_threshold OR (baseline 存在 AND value > baseline+z*std)
+// 任一满足即 is_anomaly=1; 仅基线触发时 baseline_triggered=1
+// baseline 不足 min_samples 时只走固定阈值
+int storage_check_baseline_anomaly(const char *module, const char *target,
+                                   const char *metric_key, double value,
+                                   double fixed_threshold,
+                                   baseline_verdict_t *v);
 int storage_exec_sql(const char *sql);
 int storage_clear(const char *module);
 

@@ -555,7 +555,13 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
   double retry_ps = au->retry / interval_s;
 
   int flag_lowmem  = avail_pct < avail_pct_lo && m->total > 0;
-  int flag_major   = r->pgmajfault_ps > majfault_hi;
+  // 基线自适应: major fault 双阈值 OR 逻辑
+  baseline_verdict_t bl;
+  storage_check_baseline_anomaly("mem", "内存子系统", "major fault",
+                                 r->pgmajfault_ps, majfault_hi, &bl);
+  int flag_major_fixed = (r->pgmajfault_ps > majfault_hi);
+  int flag_major_baseline = bl.baseline_triggered;
+  int flag_major   = flag_major_fixed || flag_major_baseline;
   int flag_swap    = (r->pswpin_ps > g_cfg.mem_swapin || r->pswpout_ps > g_cfg.mem_swapin)
                      && swap_used > 0;
   int flag_refault = r->refault_ps > g_cfg.mem_refault;
@@ -611,6 +617,9 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
     anomaly_type = "内存: refault 偏高 (注意)";
     root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — "
                  "暂未伴随内存压力或高缺页, 持续监控";
+  } else if (flag_major && flag_major_baseline && !flag_major_fixed) {
+    anomaly_type = "内存基线突增 (major fault)";
+    root_cause = "major fault 速率相对历史均值显著升高, 虽未达固定阈值但偏离常态";
   } else if (flag_major) {
     anomaly_type = "内存: major fault 偏高 (注意)";
     root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, "
@@ -678,9 +687,14 @@ static void print_diagnosis(FILE *out, const struct meminfo *m,
   if (flag_lowmem)
     fprintf(out, "    %d. 可用内存降至 %.1f%%, 低于低水位 %.0f%%\n",
             ev++, avail_pct, avail_pct_lo);
-  if (flag_major)
-    fprintf(out, "    %d. major fault 速率 %.0f 次/s, 超出阈值 %.0f\n",
-            ev++, r->pgmajfault_ps, majfault_hi);
+  if (flag_major) {
+    if (flag_major_fixed)
+      fprintf(out, "    %d. major fault 速率 %.0f 次/s, 超出阈值 %.0f\n",
+              ev++, r->pgmajfault_ps, majfault_hi);
+    else
+      fprintf(out, "    %d. major fault 速率 %.0f 次/s, 超过基线阈值 %.1f (历史均值+%.0fσ, 固定阈值 %.0f)\n",
+              ev++, r->pgmajfault_ps, bl.baseline_threshold, g_cfg.baseline_z_score, majfault_hi);
+  }
   if (flag_swap)
     fprintf(out, "    %d. 换入 %.0f 页/s、换出 %.0f 页/s, Swap 正在活跃换页\n",
             ev++, r->pswpin_ps, r->pswpout_ps);
@@ -881,7 +895,14 @@ static void print_mem_json_report(const struct meminfo *m,
 	// section: diagnosis
 	{
 		int flag_lowmem  = avail_pct < avail_pct_lo && m->total > 0;
-		int flag_major   = r->pgmajfault_ps > majfault_hi;
+		// 基线自适应: major fault 双阈值 OR 逻辑
+		// target=内存子系统 (稳定键, 不随进程变化), metric_key="major fault"
+		baseline_verdict_t bl;
+		storage_check_baseline_anomaly("mem", "内存子系统", "major fault",
+		                               r->pgmajfault_ps, majfault_hi, &bl);
+		int flag_major_fixed = (r->pgmajfault_ps > majfault_hi);
+		int flag_major_baseline = bl.baseline_triggered;
+		int flag_major   = flag_major_fixed || flag_major_baseline;
 		int flag_swap    = (r->pswpin_ps > g_cfg.mem_swapin || r->pswpout_ps > g_cfg.mem_swapin)
 		                   && swap_used > 0;
 		int flag_refault = r->refault_ps > g_cfg.mem_refault;
@@ -954,6 +975,10 @@ static void print_mem_json_report(const struct meminfo *m,
 				anomaly_type = "内存: refault 偏高 (注意)";
 				root_cause = "页缓存反复失效, 刚回收的页立即被重新读回 — 暂未伴随内存压力或高缺页, 持续监控";
 				is_real_anom = 0;
+			} else if (flag_major && flag_major_baseline && !flag_major_fixed) {
+				anomaly_type = "内存基线突增 (major fault)";
+				root_cause = "major fault 速率相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+				is_real_anom = 1;
 			} else if (flag_major) {
 				anomaly_type = "内存: major fault 偏高 (注意)";
 				root_cause = "major fault 速率升高 — 暂未伴随内存压力或 refault, 可能为正常共享库加载, 持续监控";
@@ -1033,7 +1058,11 @@ static void print_mem_json_report(const struct meminfo *m,
 			}
 			if (flag_major) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "                \"major fault %.0f 次/s, 超出阈值 %.0f\"", r->pgmajfault_ps, majfault_hi);
+				if (flag_major_fixed)
+					fprintf(out, "                \"major fault %.0f 次/s, 超出阈值 %.0f\"", r->pgmajfault_ps, majfault_hi);
+				else
+					fprintf(out, "                \"major fault %.0f 次/s, 超过基线阈值 %.1f (历史均值+%.0fσ, 固定阈值 %.0f)\"",
+						r->pgmajfault_ps, bl.baseline_threshold, g_cfg.baseline_z_score, majfault_hi);
 				ev++;
 			}
 			if (flag_swap) {

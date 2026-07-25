@@ -352,6 +352,14 @@ static void print_lock_report(FILE *out,
 		                 futex_avg_us > g_cfg.lock_futex_crit_us &&
 		                 cswitch_pm < 5000);
 
+		// 基线自适应: futex 平均等待 双阈值 OR 逻辑
+		char lock_target[64];
+		snprintf(lock_target, sizeof(lock_target), "%s(%u)", procs[i].comm, procs[i].pid);
+		baseline_verdict_t bl;
+		storage_check_baseline_anomaly("lock", lock_target, "futex 平均等待",
+		                               futex_avg_us, (double)g_cfg.lock_futex_warn_us, &bl);
+		int lock_baseline_hit = bl.baseline_triggered;
+
 		if (is_parked) {
 			snprintf(evidence[ev_count++], sizeof(evidence[0]),
 			         "futex 等待 %llu 次, avg %.0fus — 属正常事件等待/线程睡眠，非锁竞争",
@@ -398,6 +406,19 @@ static void print_lock_report(FILE *out,
 			         vol_ratio * 100, (double)cs->cswitch_voluntary /
 			         ((double)interval_ns / 60e9),
 			         ls->futex_wait_count, futex_avg_us);
+		}
+
+		// 锁等待基线突增: 低于固定阈值但高于历史均值
+		if (!is_anomaly && !is_parked && lock_baseline_hit &&
+		    ls->futex_wait_count > 3 && futex_avg_us <= g_cfg.lock_futex_warn_us) {
+			is_anomaly = 1;
+			subtype = "锁等待基线突增";
+			root_cause = "futex 平均等待相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+			suggestion = "排查线程同步模式是否进入异常工作状态; 持续观察趋势确认";
+			snprintf(evidence[ev_count++], sizeof(evidence[0]),
+			         "futex 等待 %llu 次, avg %.0fus 超过基线阈值 %.1fus (历史均值+%.0fσ, 固定阈值 %dus)",
+			         ls->futex_wait_count, futex_avg_us, bl.baseline_threshold,
+			         g_cfg.baseline_z_score, g_cfg.lock_futex_warn_us);
 		}
 
 		// 一般锁竞争: avg > 10ms + 多次等待
@@ -605,6 +626,14 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 			const char *root_cause = NULL;
 			const char *suggestion = NULL;
 
+			// 基线自适应: futex 平均等待 双阈值 OR 逻辑
+			char lock_target[64];
+			snprintf(lock_target, sizeof(lock_target), "%s(%u)", procs[i].comm, procs[i].pid);
+			baseline_verdict_t bl;
+			storage_check_baseline_anomaly("lock", lock_target, "futex 平均等待",
+			                               futex_avg_us, (double)g_cfg.lock_futex_warn_us, &bl);
+			int lock_baseline_hit = bl.baseline_triggered;
+
 			if (is_parked) {
 				subtype = "futex 长期等待 (事件睡眠)";
 			} else if (ls->futex_wait_count > 5 && futex_avg_us > g_cfg.lock_futex_crit_us) {
@@ -624,6 +653,13 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 				subtype = "锁竞争 (锁粒度过粗)";
 				root_cause = "主动切换占比高 + futex 等待显著，线程频繁因锁等待让出 CPU";
 				suggestion = "检查线程池与锁的配比；考虑减小锁粒度或分段锁";
+			} else if (lock_baseline_hit && !is_parked &&
+			           ls->futex_wait_count > 3 &&
+			           futex_avg_us <= g_cfg.lock_futex_warn_us) {
+				is_anomaly = 1;
+				subtype = "锁等待基线突增";
+				root_cause = "futex 平均等待相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+				suggestion = "排查线程同步模式是否进入异常工作状态; 持续观察趋势确认";
 			} else if (ls->futex_wait_count > 3 && futex_avg_us > g_cfg.lock_futex_warn_us) {
 				is_anomaly = 1;
 				subtype = "锁竞争";
@@ -693,7 +729,14 @@ static void print_json_report(struct lock_proc_info *procs, int count,
 					vol_ratio * 100.0, ls->futex_wait_count, futex_avg_us);
 				ev++;
 			}
-			if (is_anomaly && subtype && !strstr(subtype, "临界区过大") && !strstr(subtype, "热点锁集中") && !strstr(subtype, "锁粒度过粗")) {
+			if (is_anomaly && subtype && strstr(subtype, "锁等待基线突增")) {
+				if (ev > 0) fprintf(out, ",\n");
+				fprintf(out, "              \"futex 等待 %llu 次, avg %.0fus 超过基线阈值 %.1fus (历史均值+%.0fσ, 固定阈值 %dus)\"",
+					ls->futex_wait_count, futex_avg_us, bl.baseline_threshold,
+					g_cfg.baseline_z_score, g_cfg.lock_futex_warn_us);
+				ev++;
+			}
+			if (is_anomaly && subtype && !strstr(subtype, "临界区过大") && !strstr(subtype, "热点锁集中") && !strstr(subtype, "锁粒度过粗") && !strstr(subtype, "锁等待基线突增")) {
 				if (ev > 0) fprintf(out, ",\n");
 				fprintf(out, "              \"futex 等待 %llu 次, avg %.0fus 超过警告阈值 %dus\"",
 					ls->futex_wait_count, futex_avg_us, g_cfg.lock_futex_warn_us);

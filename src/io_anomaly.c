@@ -609,7 +609,15 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
 
     // 触发条件收集
     int triggers = 0;
-    int flag_lat  = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+    // 基线自适应: P99 时延双阈值 OR 逻辑
+    char io_target[64];
+    snprintf(io_target, sizeof(io_target), "块设备 %u:%u", maj, min);
+    baseline_verdict_t v;
+    storage_check_baseline_anomaly("io", io_target, "P99 时延",
+                                   p99_us, p99_hi, &v);
+    int flag_lat_fixed = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+    int flag_lat_baseline = v.baseline_triggered;
+    int flag_lat  = flag_lat_fixed || flag_lat_baseline;
     int flag_qd   = (qd_usage_pct > 70.0);
     int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
     int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
@@ -641,6 +649,9 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     } else if (flag_cache) {
       anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
       root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
+    } else if (flag_lat && flag_lat_baseline && !flag_lat_fixed) {
+      anomaly_type = "I/O 基线突增";
+      root_cause = "P99 时延相对历史均值显著升高, 虽未达固定阈值但偏离常态";
     } else if (flag_lat) {
       anomaly_type = "I/O 延迟抖动";
       root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
@@ -686,8 +697,13 @@ static void print_diagnosis(FILE *out, int stats_fd, int file_stats_fd,
     // 证据列表
     fprintf(out, "  证据:\n");
     int ev_n = 1;
-    if (flag_lat)
-      fprintf(out, "    %d. P99 时延 %.1f us 超出 %s 阈值 %.0f us\n", ev_n++, p99_us, type_label, p99_hi);
+    if (flag_lat) {
+      if (flag_lat_fixed)
+        fprintf(out, "    %d. P99 时延 %.1f us 超出 %s 阈值 %.0f us\n", ev_n++, p99_us, type_label, p99_hi);
+      else
+        fprintf(out, "    %d. P99 时延 %.1f us 超过基线阈值 %.1f us (历史均值+%.0fσ, 固定阈值 %.0f us)\n",
+          ev_n++, p99_us, v.baseline_threshold, g_cfg.baseline_z_score, p99_hi);
+    }
     if (flag_qd)
       fprintf(out, "    %d. 队列深度峰值 %llu，达到内核上限 %d 的 %.0f%%\n", ev_n++, val.ic_qdepth_max, max_qd, qd_usage_pct);
     if (flag_qwait)
@@ -1076,7 +1092,16 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			double p99_hi = kind == 0 ? 500.0 : kind == 1 ? 2000.0 : kind == 2 ? 10000.0 : 5000.0;
 			double qwait_hi = kind == 0 ? 100.0 : kind == 1 ? 500.0 : kind == 2 ? 5000.0 : 2000.0;
 
-			int flag_lat  = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+			// 基线自适应: P99 时延双阈值 OR 逻辑
+			// target=块设备, metric_key="P99 时延", 固定阈值=p99_hi (设备类型相关)
+			char io_target[64];
+			snprintf(io_target, sizeof(io_target), "块设备 %u:%u", maj, min);
+			baseline_verdict_t v;
+			storage_check_baseline_anomaly("io", io_target, "P99 时延",
+			                               p99_us, p99_hi, &v);
+			int flag_lat_fixed = (total_ios >= MIN_SAMPLES_FOR_PCT && p99_us > p99_hi);
+			int flag_lat_baseline = v.baseline_triggered;
+			int flag_lat = flag_lat_fixed || flag_lat_baseline;
 			int flag_qd   = (qd_usage_pct > 70.0);
 			int flag_qwait = (avg_qwait_us > qwait_hi && avg_qwait_us > avg_lat_us * 0.3);
 			int flag_cache = (has_reads && val.total_rd_blks > 100 && miss_rate > 10.0);
@@ -1108,6 +1133,10 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 				anomaly_type = "注意: 缓存失效偏高 (未构成异常)";
 				root_cause = "页面缓存频繁失效 — 同块数据被反复读入后又被驱逐, 暂未引起时延升高";
 				is_real_anom = 0;
+			} else if (flag_lat && flag_lat_baseline && !flag_lat_fixed) {
+				anomaly_type = "I/O 基线突增";
+				root_cause = "P99 时延相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+				is_real_anom = 1;
 			} else if (flag_lat) {
 				anomaly_type = "I/O 延迟抖动";
 				root_cause = "P99 时延异常 — 无队列拥堵、缓存失效或热点文件信号, 疑为设备固有性能瓶颈或随机 I/O 压力";
@@ -1156,7 +1185,11 @@ static void print_io_json_report(int stats_fd, int file_stats_fd,
 			int ev = 0;
 			if (flag_lat) {
 				if (ev > 0) fprintf(out, ",\n");
-				fprintf(out, "              \"P99 时延 %.1f us 超出 %s 阈值 %.0f us\"", p99_us, type_label, p99_hi);
+				if (flag_lat_fixed)
+					fprintf(out, "              \"P99 时延 %.1f us 超出 %s 阈值 %.0f us\"", p99_us, type_label, p99_hi);
+				else
+					fprintf(out, "              \"P99 时延 %.1f us 超过基线阈值 %.1f us (历史均值+%.0fσ, 固定阈值 %.0f us)\"",
+						p99_us, v.baseline_threshold, g_cfg.baseline_z_score, p99_hi);
 				ev++;
 			}
 			if (flag_qd) {

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <sys/stat.h>
 #include "sqlite3.h"
 #include "../include/storage.h"
@@ -376,6 +377,93 @@ int storage_get_timeline(const char *module, int limit,
 	sqlite3_finalize(s);
 	return n;
 }
+
+// 基线查询: 从 findings.key_metrics_json 中按 metric_key 提取历史值
+// target=NULL 聚合整个 module; 否则仅该 target
+// 用 Welford 在线算法累加 mean/M2, 避免一次性收集所有值
+int storage_get_metric_baseline(const char *module, const char *target,
+                                const char *metric_key, double within_sec,
+                                baseline_t *out)
+{
+	if (!storage_is_enabled()) return -1;
+	out->mean = 0; out->stddev = 0; out->count = 0;
+
+	const char *sql =
+		"SELECT CAST(m.value AS REAL)"
+		" FROM findings f, json_each(f.key_metrics_json) m"
+		" WHERE f.module = ?"
+		"   AND m.key = ?"
+		"   AND f.timestamp >= datetime('now', ?)"
+		"   AND (? IS NULL OR f.target = ?)"
+		" ORDER BY f.timestamp DESC";
+
+	sqlite3_stmt *s;
+	if (sqlite3_prepare_v2(g_db, sql, -1, &s, NULL) != SQLITE_OK) {
+		fprintf(stderr, "[!] 基线查询预编译失败: %s\n", sqlite3_errmsg(g_db));
+		return -1;
+	}
+	char within_buf[32];
+	snprintf(within_buf, sizeof(within_buf), "-%d seconds", (int)within_sec);
+	sqlite3_bind_text(s, 1, module, -1, SQLITE_STATIC);
+	sqlite3_bind_text(s, 2, metric_key, -1, SQLITE_STATIC);
+	sqlite3_bind_text(s, 3, within_buf, -1, SQLITE_STATIC);
+	if (target) {
+		sqlite3_bind_text(s, 4, target, -1, SQLITE_STATIC);
+		sqlite3_bind_text(s, 5, target, -1, SQLITE_STATIC);
+	} else {
+		sqlite3_bind_null(s, 4);
+		sqlite3_bind_null(s, 5);
+	}
+
+	// Welford: mean_n = mean_{n-1} + (x - mean_{n-1}) / n
+	//          M2_n = M2_{n-1} + (x - mean_{n-1}) * (x - mean_n)
+	double mean = 0, M2 = 0;
+	int n = 0;
+	while (sqlite3_step(s) == SQLITE_ROW) {
+		// CAST 失败时 sqlite3_column_double 返回 0.0, 难以与真实 0 区分
+		// 但 key_metrics 的数值字段几乎不会是非法字符串, 接受这个噪声
+		double x = sqlite3_column_double(s, 0);
+		n++;
+		double delta = x - mean;
+		mean += delta / n;
+		M2 += delta * (x - mean);
+	}
+	sqlite3_finalize(s);
+
+	out->count = n;
+	out->mean = mean;
+	out->stddev = (n > 1) ? sqrt(M2 / (n - 1)) : 0.0;
+	return n;
+}
+
+// 双阈值 OR 判定: 固定阈值 OR 基线突增
+// 各模块共用, 避免重复实现判定逻辑
+int storage_check_baseline_anomaly(const char *module, const char *target,
+                                   const char *metric_key, double value,
+                                   double fixed_threshold,
+                                   baseline_verdict_t *v)
+{
+	memset(v, 0, sizeof(*v));
+
+	int fixed_hit = (value > fixed_threshold);
+	int baseline_hit = 0;
+
+	if (g_cfg.baseline_enabled && storage_is_enabled() && target) {
+		baseline_t bl;
+		if (storage_get_metric_baseline(module, target, metric_key,
+		                                g_cfg.baseline_window_sec, &bl) >= 0 &&
+		    bl.count >= g_cfg.baseline_min_samples && bl.stddev > 0) {
+			v->baseline_threshold = bl.mean + g_cfg.baseline_z_score * bl.stddev;
+			if (value > v->baseline_threshold)
+				baseline_hit = 1;
+		}
+	}
+
+	v->is_anomaly = fixed_hit || baseline_hit;
+	v->baseline_triggered = baseline_hit && !fixed_hit;
+	return v->is_anomaly;
+}
+
 int storage_exec_sql(const char *sql)
 {
 	if (!g_db) {

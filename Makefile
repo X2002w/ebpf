@@ -11,7 +11,7 @@ VERSION  := $(or $(shell git describe --tags --abbrev=0 2>/dev/null | sed 's/^v/
 CFLAGS_COMMON := -Wall -Isrc -Iinclude -Ibuild -DVERSION=\"$(VERSION)\"
 CFLAGS_USER := $(CFLAGS_COMMON) -g -O2 -MMD -MP
 CFLAGS_BPF := $(CFLAGS_COMMON) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH)
-LDLIBS   := -lbpf -lelf -lz -lpthread -ldl
+LDLIBS   := -lbpf -lelf -lz -lpthread -ldl -lm
 SQLITE_FLAGS := -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_MEMSTATUS=0 \
 	-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1 -DSQLITE_OMIT_DEPRECATED
 

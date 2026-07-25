@@ -252,6 +252,7 @@ typedef struct {
 // + suggestion + evidence[]). 5 个分支按优先级串行: CPU 高占用 → 锁竞争 → 调度延迟
 // → 切换风暴 → 核间迁移. 后续分支若已置 is_anomaly 不再覆盖 subtype, 仅补 evidence.
 // ncpu/sys 用于证据文本中的负载与 CPU 饱和度对比.
+// target 用于基线查询 (该 PID 历史); 若 storage 未启用或样本不足则 fallback 固定阈值.
 static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
                                  double cswitch_pm, double invol_pm, double vol_pm,
                                  double vol_ratio, double avg_delay_us,
@@ -260,15 +261,30 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
                                  __u64 migrate_count,
                                  __u64 futex_wait_count, double futex_avg_us,
                                  int ncpu, const struct sys_metrics *sys,
+                                 const char *target,
                                  cpu_diag_t *d)
 {
 	memset(d, 0, sizeof(*d));
 
-	// 分支1: CPU 高占用
-	if (cpu_pct > cpu_threshold) {
+	// 基线自适应: 双阈值 OR 逻辑 (固定阈值 OR 基线突增)
+	// 走 storage_check_baseline_anomaly 统一封装, 与其他模块共用
+	baseline_verdict_t v;
+	storage_check_baseline_anomaly("cpu", target, "CPU 占用",
+	                               cpu_pct, cpu_threshold, &v);
+	int cpu_high_fixed = (cpu_pct > cpu_threshold);
+	int cpu_high_baseline = v.baseline_triggered;
+	double baseline_threshold = v.baseline_threshold;
+
+	// 分支1: CPU 高占用 (固定阈值 OR 基线突增)
+	if (cpu_high_fixed || cpu_high_baseline) {
 		d->is_anomaly = 1;
-		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
-		         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
+		if (cpu_high_fixed)
+			snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+			         "CPU 占用 %.1f%% 超过阈值 %.0f%%", cpu_pct, cpu_threshold);
+		else
+			snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
+			         "CPU 占用 %.1f%% 超过基线阈值 %.1f%% (历史均值+%.0fσ, 固定阈值 %.0f%%)",
+			         cpu_pct, baseline_threshold, g_cfg.baseline_z_score, cpu_threshold);
 		snprintf(d->evidence[d->ev_count++], sizeof(d->evidence[0]),
 		         "系统负载 %.2f, RunQ 深度 %d, 阻塞 %d",
 		         sys->load1, sys->procs_running, sys->procs_blocked);
@@ -305,12 +321,19 @@ static void classify_cpu_anomaly(double cpu_pct, double cpu_threshold,
 				         "系统负载 %.2f 远超 CPU 核心数 %d，全局 CPU 饱和",
 				         sys->load1, ncpu);
 		}
-		// 1d: 其他高 CPU
-		else {
+		// 1d: 其他高 CPU (固定阈值触发但无 busy loop / CPU 密集特征)
+		else if (cpu_high_fixed) {
 			d->subtype = "CPU异常占用";
 			d->root_cause = "进程持续高 CPU 占用，疑似计算热点或 busy loop";
 			d->suggestion = "使用 perf top/flamegraph 分析热点函数；"
 			                "考虑 cgroup CPU limit 隔离";
+		}
+		// 1e: 仅基线突增 (低于固定阈值但显著高于历史)
+		else {
+			d->subtype = "CPU 基线突增";
+			d->root_cause = "CPU 占用相对历史均值显著升高, 虽未达固定阈值但偏离常态";
+			d->suggestion = "排查进程是否进入异常工作模式 (如重试循环/缓存失效);"
+			                "持续观察趋势确认";
 		}
 	}
 
@@ -514,6 +537,9 @@ static void print_report(FILE *out,
 		}
 
 		// 统一调用 classify_cpu_anomaly — 文本/JSON 共用同一套判定
+		char target_buf[64];
+		snprintf(target_buf, sizeof(target_buf), "%s(%u)",
+		         procs[i].comm, procs[i].pid);
 		cpu_diag_t diag;
 		classify_cpu_anomaly(cpu_pct, cpu_threshold,
 		                     cswitch_pm, invol_pm, vol_pm,
@@ -521,14 +547,14 @@ static void print_report(FILE *out,
 		                     stack_concentration, total_stack_samples,
 		                     s->migrate_count,
 		                     s->futex_wait_count, futex_avg_us,
-		                     ncpu, &sys, &diag);
+		                     ncpu, &sys, target_buf, &diag);
 		int is_anomaly = diag.is_anomaly;
 		const char *subtype = diag.subtype;
 		const char *root_cause = diag.root_cause;
 		const char *suggestion = diag.suggestion;
 
 		// 按 CPU%>50% 或异常才输出详情
-		if (cpu_pct < 50.0 && !is_anomaly) continue;
+		if (cpu_pct < 10.0 && !is_anomaly) continue;
 
 		seq++;
 
@@ -809,6 +835,9 @@ static void print_json_report(struct proc_info *procs, int count,
 				? (double)s->futex_wait_ns / (double)s->futex_wait_count / 1000.0 : 0;
 
 			// 统一调用 classify_cpu_anomaly — 文本/JSON 共用同一套判定
+			// 统一调用 classify_cpu_anomaly — 文本/JSON 共用同一套判定
+			// target 提前构造, 供基线查询使用
+			snprintf(buf, sizeof(buf), "%s(%u)", procs[i].comm, procs[i].pid);
 			cpu_diag_t diag;
 			classify_cpu_anomaly(cpu_pct, cpu_threshold,
 			                     cswitch_pm, invol_pm, vol_pm,
@@ -816,19 +845,18 @@ static void print_json_report(struct proc_info *procs, int count,
 			                     stack_concentration, total_stack_samples,
 			                     s->migrate_count,
 			                     s->futex_wait_count, futex_avg_us,
-			                     ncpu, &sys, &diag);
+			                     ncpu, &sys, buf, &diag);
 			int is_anomaly = diag.is_anomaly;
 			const char *subtype = diag.subtype;
 			const char *root_cause = diag.root_cause;
 			const char *suggestion = diag.suggestion;
 
 			// 跳过非异常且 CPU<50% 的进程
-			if (!is_anomaly && cpu_pct < 50.0) continue;
+			if (!is_anomaly && cpu_pct < 10.0) continue;
 
 			// finding 之间用前置逗号分隔 (避免尾逗号)
 			if (diag_count > 0) fprintf(out, ",\n");
 			json_obj_begin_nokey(out, 4);
-			snprintf(buf, sizeof(buf), "%s(%u)", procs[i].comm, procs[i].pid);
 			json_kv_str(out, 5, "target", buf, 0);
 			json_kv_bool(out, 5, "is_anomaly", is_anomaly, 0);
 			json_kv_str(out, 5, "subtype", subtype ? subtype : "", 0);

@@ -29,6 +29,12 @@ static void set_defaults(void)
 	g_cfg.hot_lat_us         = 10000;
 	g_cfg.hot_err_rate       = 0.1;
 	g_cfg.storage_enabled    = 0;
+
+	// 基线自适应: 默认开启, 5 样本起步, z=2.0 (~95th percentile), 1 小时回看
+	g_cfg.baseline_enabled      = 1;
+	g_cfg.baseline_min_samples  = 5;
+	g_cfg.baseline_z_score      = 2.0;
+	g_cfg.baseline_window_sec   = 3600;
 }
 
 eebpf_config g_cfg;
@@ -102,6 +108,14 @@ static void apply_value(const char *key, const char *val)
 		g_cfg.hot_err_rate = atof(val);
 	else if (strcmp(key, "storage_enabled") == 0)
 		g_cfg.storage_enabled = atoi(val);
+	else if (strcmp(key, "baseline_enabled") == 0)
+		g_cfg.baseline_enabled = atoi(val);
+	else if (strcmp(key, "baseline_min_samples") == 0)
+		g_cfg.baseline_min_samples = atoi(val);
+	else if (strcmp(key, "baseline_z_score") == 0)
+		g_cfg.baseline_z_score = atof(val);
+	else if (strcmp(key, "baseline_window_sec") == 0)
+		g_cfg.baseline_window_sec = atoi(val);
 }
 
 static void try_load(const char *path)
@@ -147,4 +161,7 @@ void config_print(void)
 		g_cfg.lock_futex_warn_us, g_cfg.lock_futex_crit_us, g_cfg.lock_blocked_warn_ms);
 	fprintf(stderr, "hot: freq=%d lat=%d err_rate=%.1f\n",
 		g_cfg.hot_freq_per_sec, g_cfg.hot_lat_us, g_cfg.hot_err_rate);
+	fprintf(stderr, "baseline: enabled=%d min_samples=%d z=%.1f window=%ds\n",
+		g_cfg.baseline_enabled, g_cfg.baseline_min_samples,
+		g_cfg.baseline_z_score, g_cfg.baseline_window_sec);
 }
