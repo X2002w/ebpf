@@ -509,6 +509,10 @@ static void print_report(FILE *out,
 			}
 		}
 
+		// 非异常的 CPU 偏高进程，填充默认 subtype
+		if (!is_anomaly && !subtype && cpu_pct >= 50.0)
+			subtype = "注意: CPU 偏高 (未达异常阈值)";
+
 		// 按 CPU%>50% 或异常才输出详情
 		if (cpu_pct < 50.0 && !is_anomaly) continue;
 
@@ -520,7 +524,7 @@ static void print_report(FILE *out,
 		        "──────────────────────────────────────────────────────────────────────\n"
 		        "  [%d] PID %-6u  %-16s  状态: %s",
 		        seq, procs[i].pid, procs[i].comm, status_icon);
-		if (is_anomaly && subtype)
+		if (subtype)
 			fprintf(out, "  %s", subtype);
 		fprintf(out, "\n"
 		        "──────────────────────────────────────────────────────────────────────\n\n");
@@ -903,6 +907,10 @@ static void print_json_report(struct proc_info *procs, int count,
 				if (!suggestion)
 					suggestion = "检查 CPU affinity 设置；考虑 taskset/cpuset 绑定关键进程";
 			}
+
+			// 非异常的 CPU 偏高进程，填充默认 subtype
+			if (!is_anomaly && !subtype && cpu_pct >= 50.0)
+				subtype = "注意: CPU 偏高 (未达异常阈值)";
 
 			// 跳过非异常且 CPU<50% 的进程
 			if (!is_anomaly && cpu_pct < 50.0) continue;

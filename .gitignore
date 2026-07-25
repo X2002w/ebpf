@@ -22,4 +22,5 @@ ai_analysis/__pycache__/
 !ai_analysis/*.md
 !ai_analysis/*.json
 !report/*.md
+report/*.db*
 !docs/**

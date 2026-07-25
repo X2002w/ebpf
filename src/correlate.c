@@ -1,6 +1,6 @@
-// correlate.c — 多维关联分析
+// correlate.c — 多维关联分析 (v3.0 规则引擎)
 // 用法: eebpf correlate [--window N] [-j]
-// 加载 I/O 和内存 findings，时间窗口重叠检查，4 条关联规则匹配
+// 加载全部 5 模块 findings, 时间窗口重叠检查, 规则匹配 10 组关联
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -10,34 +10,162 @@
 #include "../include/storage.h"
 #include "../include/module.h"
 
-#define MAX_FINDINGS  64
-#define MAX_RESULTS   32
+#define MAX_FINDINGS 32
+#define MAX_RESULTS  64
+#define MAX_MODULES  5
+#define MAX_RULES    64
 
-typedef enum { CONFIDENCE_HIGH, CONFIDENCE_MEDIUM } confidence_t;
+typedef enum { REL_CAUSAL, REL_CONFIRM, REL_CO_OCCUR } relation_t;
 
 typedef struct {
-	const char *rule;
-	const char *io_subtype;
-	const char *mem_subtype;
-	confidence_t confidence;
-} correlation_rule_t;
+	relation_t relation;
+	int confidence;         // 0-100
+	const char *reasoning;  // 推理链, 一行说明
+} result_t;
 
-static correlation_rule_t rules[] = {
-	{"页缓存驱逐: I/O 缓存失效 + 内存 refault 缓存颠簸",
-	 "缓存失效偏高", "内存抖动 (缓存颠簸)", CONFIDENCE_HIGH},
-	{"回收阻塞 I/O: I/O 队列拥塞 + 内存直接回收抖动",
-	 "队列瞬时拥堵", "内存抖动 (回收抖动)", CONFIDENCE_HIGH},
-	{"仅 I/O 缓存失效 (无内存异常)",
-	 "缓存失效偏高", NULL, CONFIDENCE_MEDIUM},
-	{"仅内存 refault 缓存颠簸 (无 I/O 缓存失效)",
-	 NULL, "内存抖动 (缓存颠簸)", CONFIDENCE_MEDIUM},
-	{NULL, NULL, NULL, 0},
-};
+// 信号匹配模式 — 按 subtype 关键词匹配
+typedef struct {
+	const char *module_a;
+	const char *sig_a;       // NULL = 匹配所有
+	const char *module_b;
+	const char *sig_b;
+	int confidence;          // 0-100
+	relation_t relation;
+	const char *reasoning;
+} rule_t;
 
-// subtype 是否包含关键字 (模糊匹配)
-static int subtype_contains(const char *subtype, const char *keyword)
+static rule_t rules[MAX_RULES];
+static int n_rules = 0;
+
+// 注册规则
+#define RULE(ma, sa, mb, sb, conf, rel, why) \
+	rules[n_rules++] = (rule_t){ma, sa, mb, sb, conf, REL_##rel, why}
+
+static void init_rules(void)
 {
-	if (!subtype || !keyword) return 0;
+	if (n_rules > 0) return;
+
+	// === CPU -> Lock (2) ===
+	RULE("cpu", "CPU异常占用", "lock", "锁竞争", 85, CAUSAL,
+		"锁竞争导致 CPU 空转: lock 等待者 on-CPU 但无实际进展");
+	RULE("cpu", "CPU异常占用", "lock", "futex 长期等待", 80, CAUSAL,
+		"futex 长期睡眠导致调用者被调度离开 CPU, 形成 CPU 空转假象");
+
+	// === CPU -> Hot (2) ===
+	RULE("cpu", "CPU异常占用", "hot", "高频调用", 75, CONFIRM,
+		"系统调用风暴验证 CPU 异常: 高频 syscall 是 CPU 占用的直接来源");
+	RULE("cpu", "CPU异常占用", "hot", "高频 + 高耗时", 90, CAUSAL,
+		"高频+高耗时系统调用是 CPU 异常的强因: 调用频率与耗时的乘积");
+
+	// === CPU -> Mem (3) ===
+	RULE("cpu", "CPU异常占用", "mem", "回收抖动", 80, CAUSAL,
+		"内存回收抖动触发 kswapd 消耗 CPU: 页面回收需要内核 CPU 时间");
+	RULE("cpu", "调度延迟", "mem", "换页颠簸", 70, CAUSAL,
+		"换页颠簸引发缺页处理 → 调度延迟增大");
+	RULE("cpu", "CPU异常占用", "mem", "OOM", 85, CAUSAL,
+		"内存耗尽导致 OOM Killer 扫描进程列表及释放内存, 消耗大量 CPU");
+
+	// === I/O -> CPU (2) ===
+	RULE("io", "I/O 延迟抖动", "cpu", "调度延迟", 65, CO_OCCUR,
+		"I/O 等待提高 iowait, 减少有效 CPU 时间: 非因果但共现");
+	RULE("io", "I/O 延迟抖动", "cpu", NULL, 50, CO_OCCUR,
+		"I/O 抖动期间 CPU 可能表现为 idle(iowait), 无 CPU 异常信号");
+
+	// === I/O -> Lock (2) ===
+	RULE("io", "缓存失效", "lock", "锁竞争", 60, CO_OCCUR,
+		"页缓存失效 + 锁竞争: 可能是文件锁/block 层锁影响 I/O 与并发");
+	RULE("io", "热点文件", "lock", "锁竞争", 55, CO_OCCUR,
+		"热点文件集中访问 + 锁竞争: 多线程竞争同一文件区域");
+
+	// === I/O -> Hot (2) ===
+	RULE("io", "I/O 延迟抖动", "hot", "高耗时", 75, CONFIRM,
+		"高耗时 syscall(read/write/fsync) 佐证 I/O 延迟抖动根因");
+	RULE("io", "缓存失效", "hot", "高耗时", 70, CAUSAL,
+		"页缓存失效导致 read 走磁盘路径: syscall 耗时升高与缓存失效同现");
+
+	// === I/O -> Mem (2, 保留原有 + 扩展) ===
+	RULE("io", "缓存失效", "mem", "缓存颠簸", 90, CAUSAL,
+		"页缓存驱逐: I/O 缓存失效 + 内存 refault 缓存颠簸, 互相放大");
+	RULE("io", "队列瞬时拥堵", "mem", "回收抖动", 85, CAUSAL,
+		"回收阻塞 I/O: 直接回收触发大量磁盘写回, I/O 队列拥塞");
+
+	// === Mem -> Hot (2) ===
+	RULE("mem", "缺页", "hot", "高频调用", 85, CAUSAL,
+		"频繁缺页伴随 mmap/brk 等内存 syscall, syscall 高频验证内存压力来源");
+	RULE("mem", "高占用", "hot", "高频调用", 65, CONFIRM,
+		"内存高占用 + syscall 高频: 内存申请模式分析");
+
+	// === Mem -> Lock (2) ===
+	RULE("mem", "缺页颠簸", "lock", "锁竞争", 60, CO_OCCUR,
+		"缺页颠簸可能触发 mmap_sem 争用, 与锁竞争共现");
+	RULE("mem", "缺页激增", "lock", "锁竞争", 65, CAUSAL,
+		"缺页激增引发内核锁(mmap_sem)等待 → 用户态锁竞争加剧");
+
+	// === Lock -> Hot (2) ===
+	RULE("lock", "锁竞争", "hot", "高耗时", 80, CONFIRM,
+		"锁竞争导致 futex 高耗时: syscall 层面验证锁等待时间");
+	RULE("lock", "futex 长期等待", "hot", "高频调用", 75, CAUSAL,
+		"futex 长期等待引发重试 futex 调用: 锁等待→高频 syscall");
+
+	// === 单模块高信度异常, 无其他模块佐证 (2) ===
+	RULE("io", "缓存失效", "mem", NULL, 50, CO_OCCUR,
+		"I/O 缓存失效偏高, 窗口内无内存异常: 可能是冷数据访问, 非页颠簸");
+	RULE("mem", "缓存颠簸", "io", NULL, 50, CO_OCCUR,
+		"内存 refault 缓存颠簸, 窗口内无 I/O 缓存失效: 单侧内存压力");
+}
+
+static const char *rel_name(relation_t r)
+{
+	switch (r) {
+	case REL_CAUSAL:   return "causal";
+	case REL_CONFIRM:  return "confirm";
+	case REL_CO_OCCUR: return "co-occur";
+	}
+	return "unknown";
+}
+
+static const char *module_cn(const char *m)
+{
+	if (strcmp(m, "cpu") == 0)  return "CPU";
+	if (strcmp(m, "io") == 0)   return "I/O";
+	if (strcmp(m, "mem") == 0)  return "MEM";
+	if (strcmp(m, "lock") == 0) return "LOCK";
+	if (strcmp(m, "hot") == 0)  return "HOT";
+	return m;
+}
+
+// 按 rules[] 中出现的模块名加载 findings
+typedef struct { const char *name; finding_t *f; int n; } mod_data_t;
+
+static int find_or_load(mod_data_t *mods, int *n_mods, const char *name)
+{
+	for (int i = 0; i < *n_mods; i++)
+		if (strcmp(mods[i].name, name) == 0) return i;
+
+	mod_data_t *md = &mods[*n_mods];
+	md->name = name;
+	md->f = calloc(MAX_FINDINGS, sizeof(finding_t));
+	if (!md->f) { md->n = 0; return *n_mods; }
+	if (storage_is_enabled())
+		md->n = storage_get_recent_findings(name, 3600, md->f, MAX_FINDINGS);
+	else {
+		const char *modmap[][2] = {
+			{"cpu","report/cpu.json"},{"io","report/io.json"},
+			{"mem","report/mem.json"},{"lock","report/lock.json"},
+			{"hot","report/hot.json"},{NULL,NULL}};
+		for (int j = 0; modmap[j][0]; j++)
+			if (strcmp(name, modmap[j][0]) == 0)
+				md->n = storage_parse_findings_json(modmap[j][1], md->f, MAX_FINDINGS);
+	}
+	(*n_mods)++;
+	return *n_mods - 1;
+}
+
+// subtype 是否包含关键词 (模糊匹配)
+static int sig_match(const char *subtype, const char *keyword)
+{
+	if (!keyword) return 1;
+	if (!subtype) return 0;
 	return strstr(subtype, keyword) != NULL;
 }
 
@@ -47,7 +175,6 @@ static double parse_epoch(const char *ts)
 	struct tm tm = {};
 	int sec_int = 0;
 	double sec_frac = 0;
-	// 格式: 2026-07-26T10:30:45.123456 或 2026-07-26T10:30:45
 	if (sscanf(ts, "%d-%d-%dT%d:%d:%d.%lf",
 		&tm.tm_year, &tm.tm_mon, &tm.tm_mday,
 		&tm.tm_hour, &tm.tm_min, &sec_int, &sec_frac) < 5)
@@ -60,196 +187,148 @@ static double parse_epoch(const char *ts)
 
 #define ABS_DIFF(a, b) ((a) > (b) ? (a) - (b) : (b) - (a))
 
-// 加载指定模块的 findings (SQLite 优先, JSON fallback)
-static int load_findings(const char *module, finding_t *out, int max)
+static void print_text(mod_data_t *mods, int n_mods, int window_s)
 {
-	if (storage_is_enabled())
-		return storage_get_recent_findings(module, 3600, out, max);
+	printf("多维关联分析 (窗口 ±%ds, %d 条规则)\n\n", window_s, n_rules);
 
-	// JSON fallback
-	const char *json_files[] = {
-		"report/io.json", "report/mem.json",
-		"report/cpu.json", "report/lock.json", "report/hot.json",
-	};
-	const char *mods[] = {"io", "mem", "cpu", "lock", "hot"};
-	for (int i = 0; i < 5; i++) {
-		if (strcmp(module, mods[i]) == 0)
-			return storage_parse_findings_json(json_files[i], out, max);
-	}
-	return 0;
-}
+	int count = 0;
+	for (int ri = 0; ri < n_rules; ri++) {
+		rule_t *r = &rules[ri];
+		int ia = find_or_load(mods, &n_mods, r->module_a);
+		int ib = find_or_load(mods, &n_mods, r->module_b);
 
-static void print_correlate_text(finding_t *io_f, int io_n,
-				  finding_t *mem_f, int mem_n,
-				  int window_s)
-{
-	int result_count = 0;
+		for (int i = 0; i < mods[ia].n; i++) {
+			finding_t *fa = &mods[ia].f[i];
+			if (!sig_match(fa->subtype, r->sig_a)) continue;
 
-	printf("多维关联分析 (窗口 ±%ds)\n\n", window_s);
-
-	for (int ri = 0; rules[ri].rule; ri++) {
-		correlation_rule_t *r = &rules[ri];
-
-		for (int i = 0; i < io_n; i++) {
-			if (r->io_subtype &&
-			    !subtype_contains(io_f[i].subtype, r->io_subtype))
+			if (r->sig_b == NULL) {
+				// 单侧规则: A侧命中, B侧无相关信号
+				int has_b_signal = 0;
+				for (int j = 0; j < mods[ib].n; j++) {
+					finding_t *fb = &mods[ib].f[j];
+					double ta = parse_epoch(fa->timestamp);
+					double tb = parse_epoch(fb->timestamp);
+					if (ta == 0 || tb == 0) continue;
+					if (ABS_DIFF(ta, tb) > (double)window_s) continue;
+					if (mods[ib].f[j].is_anomaly)
+						has_b_signal = 1;
+				}
+				if (!has_b_signal) {
+					printf("[%s|%d] %s\n", rel_name(r->relation), r->confidence, r->reasoning);
+					printf("  %s 窗口: %s  subtype=%s\n",
+						module_cn(r->module_a), fa->time_window, fa->subtype);
+					printf("  %s: 窗口内无异常信号\n\n", module_cn(r->module_b));
+					count++;
+				}
 				continue;
-			for (int j = 0; j < mem_n; j++) {
-				if (r->mem_subtype &&
-				    !subtype_contains(mem_f[j].subtype, r->mem_subtype))
-					continue;
+			}
 
-				double ts_io = parse_epoch(io_f[i].timestamp);
-				double ts_mem = parse_epoch(mem_f[j].timestamp);
-				if (ts_io == 0 || ts_mem == 0) continue;
-				if (ABS_DIFF(ts_io, ts_mem) > (double)window_s)
-					continue;
+			for (int j = 0; j < mods[ib].n; j++) {
+				finding_t *fb = &mods[ib].f[j];
+				if (!sig_match(fb->subtype, r->sig_b)) continue;
 
-				const char *conf = r->confidence == CONFIDENCE_HIGH
-					? "HIGH" : "MEDIUM";
-				printf("[%s] %s\n", conf, r->rule);
-				printf("  I/O 窗口: %s  subtype=%s\n",
-					io_f[i].time_window, io_f[i].subtype);
-				printf("  MEM 窗口: %s  subtype=%s\n",
-					mem_f[j].time_window, mem_f[j].subtype);
+				double ta = parse_epoch(fa->timestamp);
+				double tb = parse_epoch(fb->timestamp);
+				if (ta == 0 || tb == 0) continue;
+				if (ABS_DIFF(ta, tb) > (double)window_s) continue;
 
-				// 输出 IO 关键指标
-				if (io_f[i].n_metrics > 0) {
-					printf("  I/O 指标:");
-					for (int k = 0; k < io_f[i].n_metrics; k++)
-						printf(" %s=%s",
-							io_f[i].metrics[k].key,
-							io_f[i].metrics[k].val);
+				printf("[%s|%d] %s\n", rel_name(r->relation), r->confidence, r->reasoning);
+				printf("  %s 窗口: %s  subtype=%s\n",
+					module_cn(r->module_a), fa->time_window, fa->subtype);
+				printf("  %s 窗口: %s  subtype=%s\n",
+					module_cn(r->module_b), fb->time_window, fb->subtype);
+
+				if (fa->n_metrics > 0) {
+					printf("  %s 指标:", module_cn(r->module_a));
+					for (int k = 0; k < fa->n_metrics; k++)
+						printf(" %s=%s", fa->metrics[k].key, fa->metrics[k].val);
 					printf("\n");
 				}
-				// 输出 MEM 关键指标
-				if (mem_f[j].n_metrics > 0) {
-					printf("  MEM 指标:");
-					for (int k = 0; k < mem_f[j].n_metrics; k++)
-						printf(" %s=%s",
-							mem_f[j].metrics[k].key,
-							mem_f[j].metrics[k].val);
+				if (fb->n_metrics > 0) {
+					printf("  %s 指标:", module_cn(r->module_b));
+					for (int k = 0; k < fb->n_metrics; k++)
+						printf(" %s=%s", fb->metrics[k].key, fb->metrics[k].val);
 					printf("\n");
 				}
 				printf("\n");
-				result_count++;
-			}
-			// 仅 I/O 规则的 mem_subtype 为 NULL, 只遍历内存 findings 中 "无异常" 的
-			if (r->mem_subtype == NULL && r->io_subtype &&
-			    subtype_contains(io_f[i].subtype, r->io_subtype)) {
-				// 检查是否有内存异常在窗口内
-				int has_mem_anomaly = 0;
-				for (int j = 0; j < mem_n; j++) {
-					double ts_io2 = parse_epoch(io_f[i].timestamp);
-					double ts_mem2 = parse_epoch(mem_f[j].timestamp);
-					if (ts_io2 == 0 || ts_mem2 == 0) continue;
-					if (ABS_DIFF(ts_io2, ts_mem2) > (double)window_s)
-						continue;
-					if (mem_f[j].is_anomaly)
-						has_mem_anomaly = 1;
-				}
-				if (!has_mem_anomaly) {
-					const char *conf = "MEDIUM";
-					printf("[%s] %s\n", conf, r->rule);
-					printf("  I/O 窗口: %s  subtype=%s\n",
-						io_f[i].time_window, io_f[i].subtype);
-					printf("  MEM: 窗口内无内存异常\n");
-					if (io_f[i].n_metrics > 0) {
-						printf("  I/O 指标:");
-						for (int k = 0; k < io_f[i].n_metrics; k++)
-							printf(" %s=%s",
-								io_f[i].metrics[k].key,
-								io_f[i].metrics[k].val);
-						printf("\n");
-					}
-					printf("\n");
-					result_count++;
-				}
-			}
-		}
-
-		// 仅 MEM 规则的 io_subtype 为 NULL
-		if (r->io_subtype == NULL && r->mem_subtype) {
-			for (int j = 0; j < mem_n; j++) {
-				if (!subtype_contains(mem_f[j].subtype, r->mem_subtype))
-					continue;
-				int has_io_invalid = 0;
-				for (int i = 0; i < io_n; i++) {
-					double ts_io3 = parse_epoch(io_f[i].timestamp);
-					double ts_mem3 = parse_epoch(mem_f[j].timestamp);
-					if (ts_io3 == 0 || ts_mem3 == 0) continue;
-					if (ABS_DIFF(ts_io3, ts_mem3) > (double)window_s)
-						continue;
-					if (subtype_contains(io_f[i].subtype, "缓存失效"))
-						has_io_invalid = 1;
-				}
-				if (!has_io_invalid) {
-					const char *conf = "MEDIUM";
-					printf("[%s] %s\n", conf, r->rule);
-					printf("  MEM 窗口: %s  subtype=%s\n",
-						mem_f[j].time_window, mem_f[j].subtype);
-					printf("  I/O: 窗口内无缓存失效\n");
-					if (mem_f[j].n_metrics > 0) {
-						printf("  MEM 指标:");
-						for (int k = 0; k < mem_f[j].n_metrics; k++)
-							printf(" %s=%s",
-								mem_f[j].metrics[k].key,
-								mem_f[j].metrics[k].val);
-						printf("\n");
-					}
-					printf("\n");
-					result_count++;
-				}
+				count++;
 			}
 		}
 	}
 
-	if (result_count == 0)
+	if (count == 0)
 		printf("(未发现关联异常)\n");
 	else
-		printf("---\n共 %d 条关联结果\n", result_count);
+		printf("---\n共 %d 条关联结果\n", count);
 }
 
-static void print_correlate_json(finding_t *io_f, int io_n,
-				  finding_t *mem_f, int mem_n,
-				  int window_s)
+static void print_json(mod_data_t *mods, int n_mods, int window_s)
 {
 	printf("{\n");
 	printf("  \"module\": \"correlate\",\n");
 	printf("  \"window_s\": %d,\n", window_s);
 	printf("  \"results\": [\n");
-	int first = 1;
 
-	for (int ri = 0; rules[ri].rule; ri++) {
-		correlation_rule_t *r = &rules[ri];
-		for (int i = 0; i < io_n; i++) {
-			if (r->io_subtype &&
-			    !subtype_contains(io_f[i].subtype, r->io_subtype))
+	int count = 0;
+	for (int ri = 0; ri < n_rules; ri++) {
+		rule_t *r = &rules[ri];
+		int ia = find_or_load(mods, &n_mods, r->module_a);
+		int ib = find_or_load(mods, &n_mods, r->module_b);
+
+		for (int i = 0; i < mods[ia].n; i++) {
+			finding_t *fa = &mods[ia].f[i];
+			if (!sig_match(fa->subtype, r->sig_a)) continue;
+
+			if (r->sig_b == NULL) {
+				int has_b_signal = 0;
+				for (int j = 0; j < mods[ib].n; j++) {
+					finding_t *fb = &mods[ib].f[j];
+					double ta = parse_epoch(fa->timestamp);
+					double tb = parse_epoch(fb->timestamp);
+					if (ta == 0 || tb == 0) continue;
+					if (ABS_DIFF(ta, tb) > (double)window_s) continue;
+					if (mods[ib].f[j].is_anomaly) has_b_signal = 1;
+				}
+				if (!has_b_signal) {
+					if (count > 0) printf(",\n");
+					printf("    {\"relation\":\"%s\",\"confidence\":%d,",
+						rel_name(r->relation), r->confidence);
+					printf("\"reasoning\":\"%s\",", r->reasoning);
+					printf("\"%s_window\":\"%s\",",
+						r->module_a, fa->time_window);
+					printf("\"%s_target\":\"%s\",",
+						r->module_a, fa->target);
+					printf("\"%s_subtype\":\"%s\"}", r->module_a, fa->subtype);
+					count++;
+				}
 				continue;
-			for (int j = 0; j < mem_n; j++) {
-				if (r->mem_subtype &&
-				    !subtype_contains(mem_f[j].subtype, r->mem_subtype))
-					continue;
-				double ts_io = parse_epoch(io_f[i].timestamp);
-				double ts_mem = parse_epoch(mem_f[j].timestamp);
-				if (ts_io == 0 || ts_mem == 0) continue;
-				if (ABS_DIFF(ts_io, ts_mem) > (double)window_s)
-					continue;
+			}
 
-				if (!first) printf(",\n");
-				first = 0;
-				printf("    {\"rule\": \"%s\",", r->rule);
-				printf("\"confidence\": \"%s\",",
-					r->confidence == CONFIDENCE_HIGH ? "HIGH" : "MEDIUM");
-				printf("\"io_time_window\": \"%s\",", io_f[i].time_window);
-				printf("\"mem_time_window\": \"%s\",", mem_f[j].time_window);
-				printf("\"io_target\": \"%s\",", io_f[i].target);
-				printf("\"mem_target\": \"%s\"}", mem_f[j].target);
+			for (int j = 0; j < mods[ib].n; j++) {
+				finding_t *fb = &mods[ib].f[j];
+				if (!sig_match(fb->subtype, r->sig_b)) continue;
+
+				double ta = parse_epoch(fa->timestamp);
+				double tb = parse_epoch(fb->timestamp);
+				if (ta == 0 || tb == 0) continue;
+				if (ABS_DIFF(ta, tb) > (double)window_s) continue;
+
+				if (count > 0) printf(",\n");
+				printf("    {\"relation\":\"%s\",\"confidence\":%d,",
+					rel_name(r->relation), r->confidence);
+				printf("\"reasoning\":\"%s\",", r->reasoning);
+				printf("\"%s_window\":\"%s\",", r->module_a, fa->time_window);
+				printf("\"%s_window\":\"%s\",", r->module_b, fb->time_window);
+				printf("\"%s_target\":\"%s\",", r->module_a, fa->target);
+				printf("\"%s_target\":\"%s\",", r->module_b, fb->target);
+				printf("\"%s_subtype\":\"%s\",", r->module_a, fa->subtype);
+				printf("\"%s_subtype\":\"%s\"}", r->module_b, fb->subtype);
+				count++;
 			}
 		}
 	}
 
-	printf("\n  ]\n}\n");
+	printf("\n  ],\n  \"count\": %d\n}\n", count);
 }
 
 int run_correlate(int argc, char **argv)
@@ -275,23 +354,36 @@ int run_correlate(int argc, char **argv)
 		}
 	}
 
-	finding_t io_findings[MAX_FINDINGS];
-	finding_t mem_findings[MAX_FINDINGS];
-	int io_n = load_findings("io", io_findings, MAX_FINDINGS);
-	int mem_n = load_findings("mem", mem_findings, MAX_FINDINGS);
+	init_rules();
 
-	if (io_n == 0 && mem_n == 0) {
-		fprintf(stderr, "eebpf correlate: 无 I/O 或内存数据\n");
-		fprintf(stderr, "  先运行 sudo ./eebpf io -d 5 和 sudo ./eebpf mem -d 5\n");
-		return 1;
+	mod_data_t mods[MAX_MODULES] = {};
+	int n_mods = 0;
+
+	// 从 rules 中收集需要的模块并预加载
+	for (int ri = 0; ri < n_rules; ri++) {
+		find_or_load(mods, &n_mods, rules[ri].module_a);
+		find_or_load(mods, &n_mods, rules[ri].module_b);
+	}
+
+	int total_findings = 0;
+	for (int i = 0; i < n_mods; i++)
+		total_findings += mods[i].n;
+
+	if (total_findings == 0) {
+		fprintf(stderr, "eebpf correlate: 无可用数据\n");
+		fprintf(stderr, "  先运行各模块采样: sudo ./eebpf <模块> -d 5\n");
+		goto cleanup;
 	}
 
 	if (json_output)
-		print_correlate_json(io_findings, io_n, mem_findings, mem_n, window_s);
+		print_json(mods, n_mods, window_s);
 	else
-		print_correlate_text(io_findings, io_n, mem_findings, mem_n, window_s);
+		print_text(mods, n_mods, window_s);
 
-	return 0;
+cleanup:
+	for (int i = 0; i < n_mods; i++)
+		free(mods[i].f);
+	return (total_findings == 0) ? 1 : 0;
 }
 
 REGISTER_MODULE(correlate, "多维关联分析", run_correlate);
