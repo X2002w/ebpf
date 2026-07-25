@@ -21,6 +21,7 @@ from pathlib import Path
 # 将当前目录加入路径以便导入 sys_message
 sys.path.insert(0, str(Path(__file__).parent))
 from sys_message import collect_all, to_text as sys_to_text
+from db_loader import load_reports_from_db, db_has_data, DEFAULT_DB
 from openai import OpenAI
 
 
@@ -167,6 +168,16 @@ def load_reports(report_dir: str, modules: list = None) -> dict:
 		else:
 			print(f"[!] 未找到或解析失败: {path}", file=sys.stderr)
 	return reports
+
+
+def _resolve_source(source: str, report_dir: str) -> str:
+	"""auto 模式: db 有数据则走 sqlite, 否则降级 json"""
+	if source != "auto":
+		return source
+	db_path = Path(report_dir) / "eebpf.db"
+	if db_path.is_file() and db_has_data(str(db_path)):
+		return "sqlite"
+	return "json"
 
 
 # 各模块数据摘要
@@ -454,6 +465,12 @@ def main():
 	parser.add_argument(
 		"--dry-run", action="store_true",
 		help="仅打印构建的 prompt，不调用 API")
+	parser.add_argument(
+		"--source", choices=["auto", "json", "sqlite"], default="auto",
+		help="数据源: auto(默认, db 有数据走 sqlite 否则 json) / json / sqlite")
+	parser.add_argument(
+		"--window", type=int, default=3600,
+		help="SQLite 模式回看窗口(秒), 默认 3600")
 	args = parser.parse_args()
 
 	# 自动查找 report 目录: 优先参数指定 > 当前目录 report/ > 项目根目录 report/
@@ -468,9 +485,19 @@ def main():
 
 	# 解析模块列表
 	wanted = [m.strip() for m in args.modules.split(",") if m.strip()]
-	reports = load_reports(report_dir, wanted)
+
+	# 数据源选择
+	source = _resolve_source(args.source, report_dir)
+	db_path = Path(report_dir) / "eebpf.db"
+	if source == "sqlite":
+		print(f"[*] 数据源: SQLite ({db_path}, 窗口 {args.window}s)", file=sys.stderr)
+		reports = load_reports_from_db(str(db_path), wanted, args.window)
+	else:
+		print(f"[*] 数据源: JSON 文件 ({report_dir}/*.json)", file=sys.stderr)
+		reports = load_reports(report_dir, wanted)
+
 	if not reports:
-		sys.exit(f"在 {report_dir}/ 下未找到指定模块的 JSON 文件: {args.modules}")
+		sys.exit(f"未加载到任何模块数据 (source={source}, dir={report_dir})")
 
 	loaded_mods = [m for m in wanted if m in reports]
 	skipped = [m for m in wanted if m not in reports]
