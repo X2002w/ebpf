@@ -13,7 +13,15 @@ static void set_defaults(void)
 	g_cfg.interval           = 5;
 	g_cfg.cpu_threshold      = 90.0;
 	g_cfg.cpu_profile_hz     = 99;
+	g_cfg.cswitch_warn_per_min = 30000;
+	g_cfg.cswitch_crit_per_min = 50000;
+	g_cfg.sched_delay_warn_us  = 5000;
+	g_cfg.sched_delay_crit_us  = 20000;
+	g_cfg.busyloop_cs_per_min  = 5000;
+	g_cfg.stack_conc_ratio     = 0.8;
 	g_cfg.io_interval        = 3;
+	g_cfg.min_samples_for_pct  = 100;
+	g_cfg.min_file_ios_for_hot = 50;
 	g_cfg.mem_interval       = 3;
 	g_cfg.mem_avail_pct      = 20.0;
 	g_cfg.mem_majfault       = 200.0;
@@ -76,8 +84,24 @@ static void apply_value(const char *key, const char *val)
 		g_cfg.cpu_threshold = atof(val);
 	else if (strcmp(key, "cpu_profile_hz") == 0)
 		g_cfg.cpu_profile_hz = atoi(val);
+	else if (strcmp(key, "cswitch_warn_per_min") == 0)
+		g_cfg.cswitch_warn_per_min = atoi(val);
+	else if (strcmp(key, "cswitch_crit_per_min") == 0)
+		g_cfg.cswitch_crit_per_min = atoi(val);
+	else if (strcmp(key, "sched_delay_warn_us") == 0)
+		g_cfg.sched_delay_warn_us = atoi(val);
+	else if (strcmp(key, "sched_delay_crit_us") == 0)
+		g_cfg.sched_delay_crit_us = atoi(val);
+	else if (strcmp(key, "busyloop_cs_per_min") == 0)
+		g_cfg.busyloop_cs_per_min = atoi(val);
+	else if (strcmp(key, "stack_conc_ratio") == 0)
+		g_cfg.stack_conc_ratio = atof(val);
 	else if (strcmp(key, "io_interval") == 0)
 		g_cfg.io_interval = atoi(val);
+	else if (strcmp(key, "min_samples_for_pct") == 0)
+		g_cfg.min_samples_for_pct = atoi(val);
+	else if (strcmp(key, "min_file_ios_for_hot") == 0)
+		g_cfg.min_file_ios_for_hot = atoi(val);
 	else if (strcmp(key, "mem_interval") == 0)
 		g_cfg.mem_interval = atoi(val);
 	else if (strcmp(key, "mem_avail_pct") == 0)
@@ -154,6 +178,12 @@ void config_print(void)
 {
 	fprintf(stderr, "interval=%d cpu_threshold=%.0f cpu_profile_hz=%d io_interval=%d\n",
 		g_cfg.interval, g_cfg.cpu_threshold, g_cfg.cpu_profile_hz, g_cfg.io_interval);
+	fprintf(stderr, "cpu: cswitch_warn=%d cswitch_crit=%d sched_warn=%d sched_crit=%d busyloop_cs=%d stack_conc=%.2f\n",
+		g_cfg.cswitch_warn_per_min, g_cfg.cswitch_crit_per_min,
+		g_cfg.sched_delay_warn_us, g_cfg.sched_delay_crit_us,
+		g_cfg.busyloop_cs_per_min, g_cfg.stack_conc_ratio);
+	fprintf(stderr, "io: min_samples_pct=%d min_file_ios_hot=%d\n",
+		g_cfg.min_samples_for_pct, g_cfg.min_file_ios_for_hot);
 	fprintf(stderr, "mem: avail=%.0f majfault=%.0f refault=%.0f swapin=%.0f stall=%.1fms retry=%.0f fault=%.0f\n",
 		g_cfg.mem_avail_pct, g_cfg.mem_majfault, g_cfg.mem_refault,
 		g_cfg.mem_swapin, g_cfg.mem_direct_stall_ms, g_cfg.mem_retry_ps, g_cfg.mem_fault_ps);

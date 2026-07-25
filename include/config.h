@@ -11,9 +11,17 @@ typedef struct {
 	// CPU
 	double cpu_threshold;
 	int cpu_profile_hz;
+	int cswitch_warn_per_min;   // cswitch/min 警告阈值
+	int cswitch_crit_per_min;   // cswitch/min 严重阈值
+	int sched_delay_warn_us;    // avg 调度延迟 警告阈值 (us)
+	int sched_delay_crit_us;    // avg 调度延迟 严重阈值 (us)
+	int busyloop_cs_per_min;    // busy loop 判定: 切换数下限
+	double stack_conc_ratio;    // 栈集中度: top1 占比阈值
 
 	// I/O
 	int io_interval;
+	int min_samples_for_pct;    // P99/P99.9 计算所需最少样本数
+	int min_file_ios_for_hot;   // 热点集中判定需要的最少文件IO数
 
 	// 内存
 	int mem_interval;
