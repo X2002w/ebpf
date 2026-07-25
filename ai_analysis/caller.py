@@ -83,6 +83,8 @@ _api_config = _load_api_config()
 API_KEY = _api_config["api_key"]
 BASE_URL = _api_config["base_url"]
 MODEL = _api_config["model"]
+PRICE_INPUT_PER_MTOK = float(_api_config.get("price_input_per_mtok", 0.0))
+PRICE_OUTPUT_PER_MTOK = float(_api_config.get("price_output_per_mtok", 0.0))
 
 # API key 未配置校验
 _PLACEHOLDER_KEYS = {"sk-xxxxxxxx", "your-api-key", "sk-your-key"}
@@ -526,8 +528,11 @@ def main():
 
 	usage = response.usage
 	if usage:
-		cost = usage.prompt_tokens/1e6*0.55 + usage.completion_tokens/1e6*2.19
-		print(f"[*] Token: 输入={usage.prompt_tokens} 输出={usage.completion_tokens} 费用~${cost:.4f}", file=sys.stderr)
+		if PRICE_INPUT_PER_MTOK or PRICE_OUTPUT_PER_MTOK:
+			cost = usage.prompt_tokens/1e6*PRICE_INPUT_PER_MTOK + usage.completion_tokens/1e6*PRICE_OUTPUT_PER_MTOK
+			print(f"[*] Token: 输入={usage.prompt_tokens} 输出={usage.completion_tokens} 费用~${cost:.4f}", file=sys.stderr)
+		else:
+			print(f"[*] Token: 输入={usage.prompt_tokens} 输出={usage.completion_tokens}", file=sys.stderr)
 
 	thinking = getattr(response.choices[0].message, "reasoning_content", None)
 	answer = response.choices[0].message.content
