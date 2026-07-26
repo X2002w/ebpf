@@ -100,6 +100,52 @@ def _meta_from_reports(conn, module: str) -> dict:
 	return {"timestamp": row["timestamp"], "duration_s": row["duration_s"]}
 
 
+def _metric_history(conn: sqlite3.Connection, module: str, target: str,
+                    metric_key: str, window_sec: int) -> list:
+	"""查指定 (module, target, metric) 的历史值序列, 按时间正序"""
+	try:
+		rows = conn.execute(
+			"SELECT CAST(m.value AS REAL) AS v, f.timestamp "
+			"FROM findings f, json_each(f.key_metrics_json) m "
+			"WHERE f.module = ? AND f.target = ? AND m.key = ? "
+			"  AND f.timestamp >= datetime('now', ?) "
+			"ORDER BY f.timestamp ASC",
+			(module, target, metric_key, f"-{int(window_sec)} seconds")).fetchall()
+	except sqlite3.Error:
+		return []
+	return [r["v"] for r in rows if r["v"] is not None]
+
+
+def _first_numeric_metric(metrics: dict) -> Optional[str]:
+	"""挑 key_metrics 里第一个能解析为数值的 key"""
+	for k, v in metrics.items():
+		try:
+			float(str(v).rstrip("%").split()[0])
+			return k
+		except (ValueError, AttributeError):
+			continue
+	return None
+
+
+def attach_trends(conn: sqlite3.Connection, reports: dict,
+                  window_sec: int = 3600) -> None:
+	"""为每个异常 finding 附带代表性指标的历史趋势序列"""
+	for mod_name, data in reports.items():
+		for sec in data.get("sections", []):
+			if sec.get("type") != "diagnosis":
+				continue
+			for f in sec.get("findings", []):
+				if not f.get("is_anomaly"):
+					continue
+				metrics = f.get("key_metrics", {})
+				mk = _first_numeric_metric(metrics)
+				if not mk:
+					continue
+				values = _metric_history(conn, mod_name, f["target"], mk, window_sec)
+				if len(values) >= 2:
+					f["_trend"] = {"key": mk, "values": values}
+
+
 def load_module_from_db(conn: sqlite3.Connection, module: str,
                         window_sec: int = 3600) -> Optional[dict]:
 	"""从 db 拉指定模块的窗口内 findings, 组装成 JSON 兼容结构"""
@@ -153,6 +199,7 @@ def load_reports_from_db(db_path: str, modules: list,
 			else:
 				print(f"[!] db 中无 {mod} 模块数据 (窗口 {window_sec}s)",
 				      file=sys.stderr)
+		attach_trends(conn, reports, window_sec)
 		return reports
 	finally:
 		conn.close()

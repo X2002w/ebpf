@@ -211,11 +211,17 @@ def _fmt_kv(title, rows):
 	return lines
 
 
+def _fmt_trend_val(v):
+	"""趋势值格式化: 整数去小数, 浮点保留 1 位"""
+	if v == int(v):
+		return str(int(v))
+	return f"{v:.1f}"
+
+
 def _fmt_findings(findings):
 	lines = []
 	anomalies = [f for f in findings if f.get("is_anomaly")]
 	warnings = [f for f in findings if not f.get("is_anomaly")]
-
 	if anomalies:
 		lines.append("#### 异常项")
 		lines.append("")
@@ -230,6 +236,10 @@ def _fmt_findings(findings):
 			if f.get("evidence"):
 				for e in f["evidence"]:
 					lines.append(f"- 证据: {e}")
+			tr = f.get("_trend")
+			if tr and len(tr.get("values", [])) >= 2:
+				arrow = " → ".join(_fmt_trend_val(v) for v in tr["values"])
+				lines.append(f"- 趋势 ({tr['key']}): {arrow}")
 			lines.append("")
 
 	if warnings:
