@@ -1018,11 +1018,15 @@ int run_lock(int argc, char **argv)
 	}
 
 	fprintf(stderr, "[*] 正在退出...\n");
-	lock_anomaly_bpf__destroy(lock_skel);
-	cpu_anomaly_bpf__destroy(cpu_skel);
+	fflush(out);
 	if (output_file) fclose(out);
-
-	return 0;
+	// 后面在改: ARM64 上 cpu+lock 双 skeleton 同时 attach sys_enter/exit_futex
+	// tracepoint 时, libbpf __destroy 偶发段错误. 数据已全部落盘, 进程退出
+	// 时内核会自动 close BPF fd / detach link, 故用 _exit 跳过 destroy.
+	// 长期方案: 去掉 cpu_anomaly.bpf.c 中重复的 futex tracepoint, 改由 lock
+	// 模块填充 pid_stats.futex_wait_* 字段
+	(void)lock_skel; (void)cpu_skel;
+	_exit(0);
 }
 
 REGISTER_MODULE(lock, "锁竞争检测", run_lock);
