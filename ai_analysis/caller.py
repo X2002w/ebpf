@@ -21,6 +21,7 @@ from pathlib import Path
 # 将当前目录加入路径以便导入 sys_message
 sys.path.insert(0, str(Path(__file__).parent))
 from sys_message import collect_all, to_text as sys_to_text
+from db_loader import load_reports_from_db, db_has_data, load_correlations, DEFAULT_DB
 from openai import OpenAI
 
 
@@ -169,6 +170,16 @@ def load_reports(report_dir: str, modules: list = None) -> dict:
 	return reports
 
 
+def _resolve_source(source: str, report_dir: str) -> str:
+	"""auto 模式: db 有数据则走 sqlite, 否则降级 json"""
+	if source != "auto":
+		return source
+	db_path = Path(report_dir) / "eebpf.db"
+	if db_path.is_file() and db_has_data(str(db_path)):
+		return "sqlite"
+	return "json"
+
+
 # 各模块数据摘要
 
 def _fmt_table(title, columns, rows):
@@ -200,16 +211,42 @@ def _fmt_kv(title, rows):
 	return lines
 
 
+def _fmt_trend_val(v):
+	"""趋势值格式化: 整数去小数, 浮点保留 1 位"""
+	if v == int(v):
+		return str(int(v))
+	return f"{v:.1f}"
+
+
+import re
+# 匹配 key_metrics 值里的阈值标注: "(阈值: 2000 us)" / "(阈值 5000, ...)"
+_THRESHOLD_RE = re.compile(r"阈值[:\s]*([0-9.]+)")
+
+
+def _extract_judge_rules(f: dict) -> list:
+	"""从 key_metrics 提取带阈值的判定规则, 返回 ["key=actual (阈值 X)", ...]"""
+	rules = []
+	for k, v in (f.get("key_metrics") or {}).items():
+		m = _THRESHOLD_RE.search(str(v))
+		if not m:
+			continue
+		# 取值前缀 (数值 + 单位), 去掉阈值括号
+		val_prefix = str(v).split("(")[0].strip()
+		rules.append(f"{k}={val_prefix} (阈值 {m.group(1)})")
+	return rules
+
+
 def _fmt_findings(findings):
 	lines = []
 	anomalies = [f for f in findings if f.get("is_anomaly")]
 	warnings = [f for f in findings if not f.get("is_anomaly")]
-
 	if anomalies:
 		lines.append("#### 异常项")
 		lines.append("")
 		for i, f in enumerate(anomalies):
-			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
+			tw = f.get("time_window")
+			suffix = f" @ {tw}" if tw else ""
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}{suffix}")
 			if f.get("root_cause"):
 				lines.append(f"- 根因: {f['root_cause']}")
 			if f.get("suggestion"):
@@ -217,13 +254,30 @@ def _fmt_findings(findings):
 			if f.get("evidence"):
 				for e in f["evidence"]:
 					lines.append(f"- 证据: {e}")
+			rules = _extract_judge_rules(f)
+			if rules:
+				lines.append(f"- 判定规则: {'; '.join(rules)}")
+			tr = f.get("_trend")
+			if tr and len(tr.get("values", [])) >= 2:
+				arrow = " → ".join(_fmt_trend_val(v) for v in tr["values"])
+				lines.append(f"- 趋势 ({tr['key']}): {arrow}")
+				bl = tr.get("baseline")
+				if bl and bl.get("count", 0) >= 2 and bl["stddev"] > 0:
+					z = 2.0  # 与 C 侧 baseline_z_score 默认一致
+					thr = bl["mean"] + z * bl["stddev"]
+					lines.append(
+						f"- 基线: mean={_fmt_trend_val(bl['mean'])} "
+						f"std={_fmt_trend_val(bl['stddev'])} "
+						f"(n={bl['count']}), mean+{z:g}σ={_fmt_trend_val(thr)}")
 			lines.append("")
 
 	if warnings:
 		lines.append("#### 注意事项")
 		lines.append("")
 		for i, f in enumerate(warnings):
-			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}")
+			tw = f.get("time_window")
+			suffix = f" @ {tw}" if tw else ""
+			lines.append(f"**{i+1}. {f.get('target', '(未知)')}** — {f.get('subtype', '')}{suffix}")
 			if f.get("root_cause"):
 				lines.append(f"- 说明: {f['root_cause']}")
 			lines.append("")
@@ -394,7 +448,30 @@ MODULE_NAMES = {
 
 # 构建 Prompt
 
-def build_combined_summary(reports: dict, modules: list) -> str:
+def _fmt_correlations(correlations: list) -> str:
+	if not correlations:
+		return ""
+	lines = ["## 跨模块关联 (C 代码预判定)", ""]
+	for c in correlations[:20]:  # 限 20 条控 token
+		rel = c.get("relation", "?")
+		conf = c.get("confidence", 0)
+		why = c.get("reasoning", "")
+		# 取双侧 target (任意模块)
+		targets = []
+		for k in ("cpu_target", "io_target", "mem_target", "lock_target", "hot_target"):
+			v = c.get(k)
+			if v and v not in targets:
+				targets.append(v)
+		pair = " ↔ ".join(targets) if len(targets) >= 2 else (targets[0] if targets else "")
+		lines.append(f"- [{rel}|{conf}] {why}")
+		if pair:
+			lines.append(f"  - {pair}")
+	lines.append("")
+	return "\n".join(lines)
+
+
+def build_combined_summary(reports: dict, modules: list,
+                           correlations: list = None) -> str:
 	parts = []
 
 	parts.append("# eBPF 采样数据汇总")
@@ -406,6 +483,9 @@ def build_combined_summary(reports: dict, modules: list) -> str:
 	parts.append("")
 
 	parts.append(_anomaly_stats(reports))
+
+	if correlations:
+		parts.append(_fmt_correlations(correlations))
 
 	for mod in modules:
 		if mod in reports:
@@ -454,6 +534,12 @@ def main():
 	parser.add_argument(
 		"--dry-run", action="store_true",
 		help="仅打印构建的 prompt，不调用 API")
+	parser.add_argument(
+		"--source", choices=["auto", "json", "sqlite"], default="auto",
+		help="数据源: auto(默认, db 有数据走 sqlite 否则 json) / json / sqlite")
+	parser.add_argument(
+		"--window", type=int, default=3600,
+		help="SQLite 模式回看窗口(秒), 默认 3600")
 	args = parser.parse_args()
 
 	# 自动查找 report 目录: 优先参数指定 > 当前目录 report/ > 项目根目录 report/
@@ -468,9 +554,19 @@ def main():
 
 	# 解析模块列表
 	wanted = [m.strip() for m in args.modules.split(",") if m.strip()]
-	reports = load_reports(report_dir, wanted)
+
+	# 数据源选择
+	source = _resolve_source(args.source, report_dir)
+	db_path = Path(report_dir) / "eebpf.db"
+	if source == "sqlite":
+		print(f"[*] 数据源: SQLite ({db_path}, 窗口 {args.window}s)", file=sys.stderr)
+		reports = load_reports_from_db(str(db_path), wanted, args.window)
+	else:
+		print(f"[*] 数据源: JSON 文件 ({report_dir}/*.json)", file=sys.stderr)
+		reports = load_reports(report_dir, wanted)
+
 	if not reports:
-		sys.exit(f"在 {report_dir}/ 下未找到指定模块的 JSON 文件: {args.modules}")
+		sys.exit(f"未加载到任何模块数据 (source={source}, dir={report_dir})")
 
 	loaded_mods = [m for m in wanted if m in reports]
 	skipped = [m for m in wanted if m not in reports]
@@ -479,7 +575,12 @@ def main():
 		print(f"[!] 未找到: {', '.join(skipped)}", file=sys.stderr)
 
 	# 构建摘要
-	data_summary = build_combined_summary(reports, loaded_mods)
+	correlations = []
+	if source == "sqlite":
+		correlations = load_correlations(args.window)
+		if correlations:
+			print(f"[*] 跨模块关联: {len(correlations)} 条 (去重后)", file=sys.stderr)
+	data_summary = build_combined_summary(reports, loaded_mods, correlations)
 	sys_data = collect_all()
 	sys_text = sys_to_text(sys_data)
 
