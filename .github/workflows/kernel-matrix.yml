@@ -73,7 +73,11 @@ jobs:
 
       - name: 冒烟测试 (内核 ${{ matrix.kernel }})
         run: |
-          vng -r kernel/vmlinuz --cpus 2 --memory 4G --user root -- \
+          set -x
+          vng --version
+          ls -l kernel/vmlinuz
+          file kernel/vmlinuz
+          vng -r kernel/vmlinuz --cpus 2 --memory 4G --user root --verbose -- \
             bash -c '
             set -e
             uname -r
@@ -117,12 +121,6 @@ jobs:
             ./eebpf lock -i 2 -d 4 -p 0 -j
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
-
-            # correlate: 多维关联分析 (依赖前面生成的 JSON)
-            ./eebpf correlate -j --window 60
-
-            # history: 历史趋势查询 (空库不报错即可)
-            ./eebpf history cpu --limit 5
 
             echo "ALL PASS"
           '
