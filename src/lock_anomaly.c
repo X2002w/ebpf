@@ -1,8 +1,8 @@
 // lock_anomaly.c — 锁竞争异常观测与根因定位 (用户态)
 //
-// 双 skeleton 架构:
-//   - cpu_anomaly_bpf:  提供 sched_switch / sched_stat_blocked / on-CPU 数据
-//   - lock_anomaly_bpf: 提供 futex per-key 热点锁 + 等待点调用栈
+// 自包含设计: lock_anomaly_bpf 独占所有 tracepoint (sched_switch / sched_stat_blocked
+// / sys_enter_futex / sys_exit_futex), 不再加载 cpu_anomaly skeleton, 避免 ARM64
+// 双 skeleton 同时 attach futex tracepoint 时的 libbpf destroy 段错误
 //
 // 用法:
 //   eebpf lock [-i interval_s] [-d duration_s] [-o output_file] [-p profile_hz] [-j]
@@ -17,16 +17,11 @@
 #include <errno.h>
 #include <bpf/libbpf.h>
 #include <bpf/bpf.h>
-#include <linux/perf_event.h>
-#include <sys/syscall.h>
-#include <sys/ioctl.h>
-#include <sys/utsname.h>
 #include "../include/utils.h"
 #include "../include/report_json.h"
 #include "../include/storage.h"
 #include "../include/report_md.h"
 #include "../include/bpf_shared.h"
-#include "cpu_anomaly.skel.h"
 #include "lock_anomaly.skel.h"
 #include "../include/lock_anomaly.h"
 #include "../include/common.h"
@@ -118,6 +113,16 @@ struct hot_lock_entry {
 	struct lock_futex_key key;
 	struct futex_hot_stats stats;
 };
+
+// 清空 futex_key_stats map (key 是 struct lock_futex_key, 不能用 reset_map)
+static void reset_futex_key_map(int map_fd)
+{
+	struct lock_futex_key key = {}, next;
+	while (bpf_map_get_next_key(map_fd, &key, &next) == 0) {
+		bpf_map_delete_elem(map_fd, &next);
+		key = next;
+	}
+}
 
 static int cmp_hot_lock(const void *a, const void *b)
 {
@@ -825,7 +830,7 @@ static void usage(const char *prog)
 		"  -i, --interval <秒>      采样间隔（默认: %d）\n"
 		"  -d, --duration <秒>      总运行时长，0 表示持续运行（默认: 0）\n"
 		"  -o, --output <文件路径>  输出到文件（默认: 标准输出）\n"
-		"  -p, --profile <Hz>       栈采样频率，需要 root（默认: %d, 0=禁用）\n"
+		"  -p, --profile <Hz>       (已弃用) futex 等待点栈采样不依赖 perf\n"
 		"  -j, --json               输出 JSON + Markdown 报告到 report/ 目录\n"
 		"  -h, --help               显示本帮助信息\n"
 		"\n"
@@ -835,7 +840,7 @@ static void usage(const char *prog)
 		"  # 配合 stress-ng 复现锁竞争:\n"
 		"  # stress-ng --mutex 8 --timeout 180s &\n"
 		"  # sudo %s -d 180\n",
-		prog, g_cfg.interval, g_cfg.cpu_profile_hz, prog, prog, prog);
+		prog, g_cfg.interval, prog, prog, prog);
 }
 
 // run_lock
@@ -884,75 +889,30 @@ int run_lock(int argc, char **argv)
 	signal(SIGINT, on_signal);
 	signal(SIGTERM, on_signal);
 
-	// 加载 CPU skeleton (提供 sched_switch / sched_stat_* / on-CPU 数据)
-	struct cpu_anomaly_bpf *cpu_skel = cpu_anomaly_bpf__open_and_load();
-	if (!cpu_skel) {
-		fprintf(stderr, "无法加载 CPU BPF 程序 (需要 root 权限)\n");
-		if (output_file) fclose(out);
-		return 1;
-	}
-	if (cpu_anomaly_bpf__attach(cpu_skel) != 0) {
-		fprintf(stderr, "无法挂载 CPU BPF 程序\n");
-		cpu_anomaly_bpf__destroy(cpu_skel);
-		if (output_file) fclose(out);
-		return 1;
-	}
-
-	// 加载 Lock skeleton (futex per-key + 等待点栈)
+	// 加载 Lock skeleton (自包含: sched_switch / sched_stat_blocked / futex)
 	struct lock_anomaly_bpf *lock_skel = lock_anomaly_bpf__open_and_load();
 	if (!lock_skel) {
-		fprintf(stderr, "无法加载 Lock BPF 程序\n");
-		cpu_anomaly_bpf__destroy(cpu_skel);
+		fprintf(stderr, "无法加载 Lock BPF 程序 (需要 root 权限)\n");
 		if (output_file) fclose(out);
 		return 1;
 	}
 	if (lock_anomaly_bpf__attach(lock_skel) != 0) {
 		fprintf(stderr, "无法挂载 Lock BPF 程序\n");
 		lock_anomaly_bpf__destroy(lock_skel);
-		cpu_anomaly_bpf__destroy(cpu_skel);
 		if (output_file) fclose(out);
 		return 1;
 	}
 
-	// 可选 perf_event 栈采样 (CPU skeleton 的 on_profile)
-	int *pe_fds = NULL;
-	int pe_count = 0;
-	if (profile_hz > 0) {
-		pe_fds = calloc(ncpu, sizeof(int));
-		if (pe_fds) {
-			struct perf_event_attr attr = {};
-			attr.type   = PERF_TYPE_SOFTWARE;
-			attr.config = PERF_COUNT_SW_CPU_CLOCK;
-			attr.size   = sizeof(attr);
-			attr.sample_freq = profile_hz;
-			attr.freq   = 1;
-			attr.disabled = 1;
+	(void)profile_hz;  // perf 栈采样已移除 (原 cpu_skel->on_profile 依赖), lock 模块用 futex 等待点栈
 
-			for (int cpu = 0; cpu < ncpu; cpu++) {
-				int fd = perf_event_open(&attr, -1, cpu, -1, PERF_FLAG_FD_CLOEXEC);
-				if (fd < 0) { pe_fds[cpu] = -1; continue; }
-				pe_fds[cpu] = fd;
-				bpf_program__attach_perf_event(cpu_skel->progs.on_profile, fd);
-				pe_count++;
-			}
-			if (pe_count > 0) {
-				for (int cpu = 0; cpu < ncpu; cpu++)
-					if (pe_fds[cpu] >= 0)
-						ioctl(pe_fds[cpu], PERF_EVENT_IOC_ENABLE, 0);
-				fprintf(stderr, "[*] perf 栈采样已启用, %d Hz, %d/%d CPU\n",
-				        profile_hz, pe_count, ncpu);
-			}
-		}
-	}
-
-	int cpu_stats_fd = bpf_map__fd(cpu_skel->maps.pid_stats);
+	int cpu_stats_fd = bpf_map__fd(lock_skel->maps.pid_stats);
 	int lock_stats_fd = bpf_map__fd(lock_skel->maps.lock_pid_stats);
 	int futex_key_fd = bpf_map__fd(lock_skel->maps.futex_key_stats);
 	int lock_stack_fd = bpf_map__fd(lock_skel->maps.lock_stack_counts);
 	int lock_stackmap_fd = bpf_map__fd(lock_skel->maps.lock_stackmap);
 
 	fprintf(stderr, "[*] 锁竞争观测已启动, 采样间隔=%ds\n", interval);
-	fprintf(stderr, "[*] 已加载 CPU skeleton (sched_switch/sched_stat_*) + Lock skeleton (futex per-key)\n");
+	fprintf(stderr, "[*] 已加载 Lock skeleton (sched_switch/sched_stat_blocked + futex per-key)\n");
 
 	time_t start = time(NULL);
 
@@ -1001,32 +961,18 @@ int run_lock(int argc, char **argv)
 		if (exiting || (duration > 0 && time(NULL) - start >= duration))
 			break;
 
-		// 重置 map
+		// 重置 map (futex_key_stats 的 key 是结构体, 不能用 reset_map)
 		reset_map(lock_stats_fd);
-		reset_map(futex_key_fd);
+		reset_futex_key_map(futex_key_fd);
 		reset_map(lock_stack_fd);
 		reset_map(cpu_stats_fd);
 	}
 
-	if (pe_fds) {
-		for (int cpu = 0; cpu < ncpu; cpu++)
-			if (pe_fds[cpu] >= 0) {
-				ioctl(pe_fds[cpu], PERF_EVENT_IOC_DISABLE, 0);
-				close(pe_fds[cpu]);
-			}
-		free(pe_fds);
-	}
-
 	fprintf(stderr, "[*] 正在退出...\n");
-	fflush(out);
+	lock_anomaly_bpf__destroy(lock_skel);
 	if (output_file) fclose(out);
-	// 后面在改: ARM64 上 cpu+lock 双 skeleton 同时 attach sys_enter/exit_futex
-	// tracepoint 时, libbpf __destroy 偶发段错误. 数据已全部落盘, 进程退出
-	// 时内核会自动 close BPF fd / detach link, 故用 _exit 跳过 destroy.
-	// 长期方案: 去掉 cpu_anomaly.bpf.c 中重复的 futex tracepoint, 改由 lock
-	// 模块填充 pid_stats.futex_wait_* 字段
-	(void)lock_skel; (void)cpu_skel;
-	_exit(0);
+
+	return 0;
 }
 
 REGISTER_MODULE(lock, "锁竞争检测", run_lock);
