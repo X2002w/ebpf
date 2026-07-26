@@ -261,6 +261,14 @@ def _fmt_findings(findings):
 			if tr and len(tr.get("values", [])) >= 2:
 				arrow = " → ".join(_fmt_trend_val(v) for v in tr["values"])
 				lines.append(f"- 趋势 ({tr['key']}): {arrow}")
+				bl = tr.get("baseline")
+				if bl and bl.get("count", 0) >= 2 and bl["stddev"] > 0:
+					z = 2.0  # 与 C 侧 baseline_z_score 默认一致
+					thr = bl["mean"] + z * bl["stddev"]
+					lines.append(
+						f"- 基线: mean={_fmt_trend_val(bl['mean'])} "
+						f"std={_fmt_trend_val(bl['stddev'])} "
+						f"(n={bl['count']}), mean+{z:g}σ={_fmt_trend_val(thr)}")
 			lines.append("")
 
 	if warnings:

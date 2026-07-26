@@ -127,9 +127,24 @@ def _first_numeric_metric(metrics: dict) -> Optional[str]:
 	return None
 
 
+def _baseline_stats(values: list) -> dict:
+	"""Welford 算 mean/stddev, 与 C 侧 storage_get_metric_baseline 一致"""
+	n = len(values)
+	if n == 0:
+		return {"mean": 0.0, "stddev": 0.0, "count": 0}
+	mean = 0.0
+	M2 = 0.0
+	for i, x in enumerate(values, 1):
+		delta = x - mean
+		mean += delta / i
+		M2 += delta * (x - mean)
+	stddev = (M2 / (n - 1)) ** 0.5 if n > 1 else 0.0
+	return {"mean": mean, "stddev": stddev, "count": n}
+
+
 def attach_trends(conn: sqlite3.Connection, reports: dict,
                   window_sec: int = 3600) -> None:
-	"""为每个异常 finding 附带代表性指标的历史趋势序列"""
+	"""为每个异常 finding 附带代表性指标的历史趋势序列 + 基线统计"""
 	for mod_name, data in reports.items():
 		for sec in data.get("sections", []):
 			if sec.get("type") != "diagnosis":
@@ -143,7 +158,11 @@ def attach_trends(conn: sqlite3.Connection, reports: dict,
 					continue
 				values = _metric_history(conn, mod_name, f["target"], mk, window_sec)
 				if len(values) >= 2:
-					f["_trend"] = {"key": mk, "values": values}
+					f["_trend"] = {
+						"key": mk,
+						"values": values,
+						"baseline": _baseline_stats(values),
+					}
 
 
 def load_module_from_db(conn: sqlite3.Connection, module: str,
