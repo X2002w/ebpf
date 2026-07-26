@@ -217,3 +217,31 @@ def db_has_data(db_path: str) -> bool:
 		return False
 	finally:
 		conn.close()
+
+
+def load_correlations(window_s: int = 60) -> list:
+	"""调用 ./eebpf correlate -j 拿关联结果, 按 reasoning 去重"""
+	import subprocess
+	try:
+		r = subprocess.run(
+			["./eebpf", "correlate", "-j", "--window", str(window_s)],
+			capture_output=True, text=True, timeout=10)
+	except (subprocess.SubprocessError, FileNotFoundError):
+		return []
+	if r.returncode != 0:
+		return []
+	try:
+		data = json.loads(r.stdout)
+	except json.JSONDecodeError:
+		return []
+
+	seen = set()
+	deduped = []
+	for item in data.get("results", []):
+		# 按 reasoning 去重: 同一因果链只保留首条代表性结果
+		key = item.get("reasoning", "")
+		if key in seen:
+			continue
+		seen.add(key)
+		deduped.append(item)
+	return deduped

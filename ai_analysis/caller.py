@@ -21,7 +21,7 @@ from pathlib import Path
 # 将当前目录加入路径以便导入 sys_message
 sys.path.insert(0, str(Path(__file__).parent))
 from sys_message import collect_all, to_text as sys_to_text
-from db_loader import load_reports_from_db, db_has_data, DEFAULT_DB
+from db_loader import load_reports_from_db, db_has_data, load_correlations, DEFAULT_DB
 from openai import OpenAI
 
 
@@ -440,7 +440,30 @@ MODULE_NAMES = {
 
 # 构建 Prompt
 
-def build_combined_summary(reports: dict, modules: list) -> str:
+def _fmt_correlations(correlations: list) -> str:
+	if not correlations:
+		return ""
+	lines = ["## 跨模块关联 (C 代码预判定)", ""]
+	for c in correlations[:20]:  # 限 20 条控 token
+		rel = c.get("relation", "?")
+		conf = c.get("confidence", 0)
+		why = c.get("reasoning", "")
+		# 取双侧 target (任意模块)
+		targets = []
+		for k in ("cpu_target", "io_target", "mem_target", "lock_target", "hot_target"):
+			v = c.get(k)
+			if v and v not in targets:
+				targets.append(v)
+		pair = " ↔ ".join(targets) if len(targets) >= 2 else (targets[0] if targets else "")
+		lines.append(f"- [{rel}|{conf}] {why}")
+		if pair:
+			lines.append(f"  - {pair}")
+	lines.append("")
+	return "\n".join(lines)
+
+
+def build_combined_summary(reports: dict, modules: list,
+                           correlations: list = None) -> str:
 	parts = []
 
 	parts.append("# eBPF 采样数据汇总")
@@ -452,6 +475,9 @@ def build_combined_summary(reports: dict, modules: list) -> str:
 	parts.append("")
 
 	parts.append(_anomaly_stats(reports))
+
+	if correlations:
+		parts.append(_fmt_correlations(correlations))
 
 	for mod in modules:
 		if mod in reports:
@@ -541,7 +567,12 @@ def main():
 		print(f"[!] 未找到: {', '.join(skipped)}", file=sys.stderr)
 
 	# 构建摘要
-	data_summary = build_combined_summary(reports, loaded_mods)
+	correlations = []
+	if source == "sqlite":
+		correlations = load_correlations(args.window)
+		if correlations:
+			print(f"[*] 跨模块关联: {len(correlations)} 条 (去重后)", file=sys.stderr)
+	data_summary = build_combined_summary(reports, loaded_mods, correlations)
 	sys_data = collect_all()
 	sys_text = sys_to_text(sys_data)
 
