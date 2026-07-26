@@ -218,6 +218,24 @@ def _fmt_trend_val(v):
 	return f"{v:.1f}"
 
 
+import re
+# 匹配 key_metrics 值里的阈值标注: "(阈值: 2000 us)" / "(阈值 5000, ...)"
+_THRESHOLD_RE = re.compile(r"阈值[:\s]*([0-9.]+)")
+
+
+def _extract_judge_rules(f: dict) -> list:
+	"""从 key_metrics 提取带阈值的判定规则, 返回 ["key=actual (阈值 X)", ...]"""
+	rules = []
+	for k, v in (f.get("key_metrics") or {}).items():
+		m = _THRESHOLD_RE.search(str(v))
+		if not m:
+			continue
+		# 取值前缀 (数值 + 单位), 去掉阈值括号
+		val_prefix = str(v).split("(")[0].strip()
+		rules.append(f"{k}={val_prefix} (阈值 {m.group(1)})")
+	return rules
+
+
 def _fmt_findings(findings):
 	lines = []
 	anomalies = [f for f in findings if f.get("is_anomaly")]
@@ -236,6 +254,9 @@ def _fmt_findings(findings):
 			if f.get("evidence"):
 				for e in f["evidence"]:
 					lines.append(f"- 证据: {e}")
+			rules = _extract_judge_rules(f)
+			if rules:
+				lines.append(f"- 判定规则: {'; '.join(rules)}")
 			tr = f.get("_trend")
 			if tr and len(tr.get("values", [])) >= 2:
 				arrow = " → ".join(_fmt_trend_val(v) for v in tr["values"])
