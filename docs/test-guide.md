@@ -185,3 +185,44 @@ for mod in ('cpu', 'io', 'mem', 'lock'):
                 print(f'{mod}: {finding[\"target\"]} → {finding[\"subtype\"]}  ✓')
 "
 ```
+
+## 7.0 多维关联与历史查询
+
+### correlate 规则引擎
+
+`correlate` 子命令读取已写入的 JSON 报告，按内置规则做跨模块时间窗匹配：
+
+```bash
+# 先跑各模块采集（写入 report/*.json 与 eebpf.db）
+sudo eebpf cpu -d 10 -j
+sudo eebpf io -d 10 -j
+sudo eebpf mem -d 10 -j
+
+# 60s 窗口关联
+sudo eebpf correlate -j
+```
+
+输出包含匹配到的规则名、关联模块、对应时间窗与关键指标。
+
+### history 时间线查询
+
+历史数据写入 `report/eebpf.db`（SQLite）。查询示例：
+
+```bash
+sudo eebpf history cpu -n 20
+sudo eebpf history mem -j -n 50
+sudo eebpf history --sql "SELECT module,subtype,timestamp FROM findings ORDER BY timestamp DESC LIMIT 20"
+```
+
+### AI 诊断 5 项上下文能力
+
+`ai_analysis/caller.py` 在生成 prompt 时附带 5 类上下文（需 `storage_enabled=1`）：
+
+| 能力 | 来源 | 用途 |
+|------|------|------|
+| 基线 | `history` 表 + Welford 在线统计 | 区分稳态与异常波动 |
+| 趋势 | 最近 N 条同模块记录 | 展示指标变化方向 |
+| 关联 | `correlate` 输出 | 跨模块根因链 |
+| 规则 | 各模块 finding 的 `evidence` | 给出判定依据 |
+| 时间戳 | finding `time_window` | 异常时间窗定位 |
+

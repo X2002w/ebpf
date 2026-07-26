@@ -22,9 +22,14 @@ ai_analysis/__pycache__/
 !requirements.txt
 !ai_analysis/*.md
 !ai_analysis/*.json
-!report/*.md
 report/*.db*
 !docs/**
+
+# 个人笔记, 不纳入版本控制
+docs/io_anomaly.md
+
+# 本地运行报告
+report/
 
 # 重新忽略交换文件,覆盖上方 !docs/** 的取消忽略
 *.swp

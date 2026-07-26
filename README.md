@@ -53,6 +53,18 @@ sudo ./scripts/setup.sh              # 依赖检查 → 构建 → 场景复现
 | `-j, --json` | 额外输出 JSON + Markdown 报告到 `report/` 目录 |
 | `-h, --help` | 显示帮助 |
 
+### 子命令
+
+| 子命令 | 说明 |
+|------|------|
+| `cpu` | CPU 异常检测（CPU 密集/busy loop/锁竞争三根因分类） |
+| `io` | I/O 异常检测（延迟/队列/缓存失效/热点文件/多设备） |
+| `mem` | 内存异常检测（OOM/换页颠簸/缓存颠簸/回收抖动/缺页激增） |
+| `lock` | 锁竞争检测（futex 等待/阻塞分析/等待点调用栈） |
+| `hot` | 系统调用热点分析（频率/耗时/错误率） |
+| `correlate` | 多维关联分析（跨模块规则引擎，时间窗口匹配） |
+| `history` | SQLite 历史趋势查询（基线/趋势/异常回溯） |
+
 ### 配置文件
 
 通过 `eebpf.conf` 自定义阈值和参数，查找路径: `./eebpf.conf` > `~/.eebpf.conf` > `/etc/eebpf.conf`。
@@ -124,6 +136,18 @@ echo "sk-your-key" > ai_analysis/api.txt(本地测试)
 
 API 兼容 OpenAI 接口的任意后端（DeepSeek、通义千问等），编辑 `ai_analysis/api_config.json` 切换。
 
+### AI 诊断 5 项上下文能力
+
+`caller.py` 生成 prompt 时附带 5 类上下文（需 `storage_enabled=1` 才能取到基线/趋势/关联）：
+
+| 能力 | 来源 | 用途 |
+|------|------|------|
+| 基线 | history 表 + Welford 在线统计 | 区分稳态与异常波动 |
+| 趋势 | 最近 N 条同模块记录 | 展示指标变化方向 |
+| 关联 | correlate 输出 | 跨模块根因链 |
+| 规则 | 各模块 finding 的 evidence | 给出判定依据 |
+| 时间戳 | finding time_window | 异常时间窗定位 |
+
 ### 自定义系统提示词
 
 编辑 `ai_analysis/system_prompt.md` 即可自定义发送给大模型的系统提示词，无需修改代码。`caller.py` 启动时自动加载该文件内容作为 system prompt，若文件不存在则使用内置简化版。
@@ -133,6 +157,36 @@ API 兼容 OpenAI 接口的任意后端（DeepSeek、通义千问等），编辑
 - 追加特定分析维度（如网络、GPU）
 - 修改根因推断的侧重点或优先级
 - 添加领域特定的诊断经验规则
+
+## 多维关联分析
+
+`correlate` 子命令读取各模块已写入的报告，按规则引擎做跨模块时间窗匹配，输出关联诊断。例如 I/O 缓存失效与内存抖动在 ±60s 内同时出现即判定为相关。
+
+```bash
+# 默认 60s 窗口
+sudo eebpf correlate -j
+
+# 自定义窗口
+sudo eebpf correlate --window 120 -j
+```
+
+## 历史趋势查询
+
+采集报告默认写入 `report/eebpf.db`（SQLite）。`history` 子命令查询指定模块的时间线。
+
+```bash
+# 查询 CPU 模块最近 20 条记录
+sudo eebpf history cpu
+
+# JSON 输出 + 限制条数
+sudo eebpf history mem -j -n 50
+
+# 执行自定义 SQL
+sudo eebpf history --sql "SELECT * FROM findings WHERE module='io' LIMIT 10"
+
+# 清空历史
+sudo eebpf history --clear
+```
 
 ## 构建要求
 
@@ -175,7 +229,7 @@ GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md
 - [x] cicd自动构建发布镜像
 - [x] 将下载LLVM从build test action移到dockr build action 中
 - [x] 将各部分监测程序的公共宏放置再一起 or 使用config文件编辑
-- [ ] 使用sqlite存储历史数据
+- [x] 使用sqlite存储历史数据
 - [x] 加前瞻性6.1, 6.6, 6.12, stable —— stable 标签自动追新内核，将来内核更新破坏兼容性时 CI 会第一时间红
 - [x] 重构文档输出报告
 - [x] AI 多模块联合诊断 (ai_analysis/)
@@ -184,5 +238,5 @@ GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md
 - [x] 修正report报告路径默认为项目根目录下report目录
 - [ ] 当前项目无并发,考虑将py调用大模型更换为curl调用
 - [x] 分离打包，deb内添加说明
-- [ ] 插件化扩展,子命令注册机制抽象,支持加载自定义检测模块
+- [x] 插件化扩展,子命令注册机制抽象,支持加载自定义检测模块
 - [ ] 考虑AI 诊断支持保证离线环境可复现 or 添加免费限额api key
