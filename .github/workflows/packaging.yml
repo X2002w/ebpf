@@ -150,6 +150,9 @@ jobs:
           kill $SPID 2>/dev/null || true
           wait $SPID 2>/dev/null || true
 
+          # correlate: 多维关联分析 (依赖前面生成的 JSON)
+          sudo eebpf correlate -j --window 60
+
           echo "ALL PASS"
 
   rpm-amd64:

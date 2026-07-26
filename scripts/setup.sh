@@ -52,6 +52,14 @@ for mod in cpu io mem lock hot; do
 	fi
 done
 
+if [ -x "$SCRIPT_DIR/eebpf" ]; then
+	if "$SCRIPT_DIR/eebpf" -h 2>&1 | grep -q correlate; then
+		ok "eebpf correlate (子命令注册)"
+	else
+		warn "eebpf correlate 未注册"
+	fi
+fi
+
 step 4 "场景复现测试"
 
 if [ "$(id -u)" = "0" ]; then
@@ -73,6 +81,7 @@ echo "  二进制文件:  $SCRIPT_DIR/eebpf"
 echo "  场景测试:    sudo ./scripts/reproduce.sh"
 echo "  AI 诊断:     source ai_analysis/venv/bin/activate"
 echo "               python3 ai_analysis/caller.py report/ -m cpu,io,mem,lock,hot"
+echo "               python3 ai_analysis/caller.py --source sqlite --window 3600"
 echo ""
 echo "  使用示例:"
 echo "    sudo ./eebpf cpu -d 10"
@@ -80,4 +89,6 @@ echo "    sudo ./eebpf io  -d 10"
 echo "    sudo ./eebpf mem -d 10"
 echo "    sudo ./eebpf lock -d 10"
 echo "    sudo ./eebpf hot -d 10"
+echo "    sudo ./eebpf correlate -j       # 多维关联分析"
+echo "    sudo ./eebpf history cpu --limit 20  # 历史趋势查询"
 echo -e "${BOLD}============================================================${NC}"

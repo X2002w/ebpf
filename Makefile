@@ -102,6 +102,7 @@ install-conf:
 install-ai:
 	install -d $(DATADIR)/ai_analysis
 	install -m 644 ai_analysis/caller.py $(DATADIR)/ai_analysis/
+	install -m 644 ai_analysis/db_loader.py $(DATADIR)/ai_analysis/
 	install -m 644 ai_analysis/sys_message.py $(DATADIR)/ai_analysis/
 	install -m 644 ai_analysis/api_config.json $(DATADIR)/ai_analysis/
 	install -m 644 ai_analysis/system_prompt.md $(DATADIR)/ai_analysis/

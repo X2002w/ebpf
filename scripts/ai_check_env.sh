@@ -71,16 +71,24 @@ echo "[4] 系统信息采集"
 PYTHON=$(command -v python3)
 [ -f "$AI_DIR/venv/bin/python" ] && PYTHON="$AI_DIR/venv/bin/python"
 check "sys_message.py 可导入" "$PYTHON" -c "import sys; sys.path.insert(0,'$AI_DIR'); import sys_message"
+check "db_loader.py 可导入" "$PYTHON" -c "import sys; sys.path.insert(0,'$AI_DIR'); import db_loader"
 echo ""
 
-echo "[5] 数据目录"
+echo "[5] 数据源"
 DATA_OK=0
 for f in cpu.json io.json mem.json lock.json hot.json; do
 	if [ -f "$REPORT_DIR/$f" ]; then
 		((DATA_OK++))
 	fi
 done
-echo "  [INFO] report/ 下有 $DATA_OK/5 个模块 JSON"
+DB_FILE="$REPORT_DIR/eebpf.db"
+if [ -f "$DB_FILE" ]; then
+	echo "  [OK] SQLite 数据库存在: $DB_FILE"
+	((PASS++))
+else
+	echo "  [INFO] 未找到 $DB_FILE (--source sqlite 模式需要)"
+fi
+echo "  [INFO] report/ 下有 $DATA_OK/5 个模块 JSON (--source json 模式需要)"
 echo ""
 
 echo "[6] 测试 API 连通性"

@@ -118,5 +118,11 @@ jobs:
             kill $SPID 2>/dev/null || true
             wait $SPID 2>/dev/null || true
 
+            # correlate: 多维关联分析 (依赖前面生成的 JSON)
+            ./eebpf correlate -j --window 60
+
+            # history: 历史趋势查询 (空库不报错即可)
+            ./eebpf history cpu --limit 5
+
             echo "ALL PASS"
           '
