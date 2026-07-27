@@ -136,6 +136,8 @@ JSON 格式详见 [docs/json-schema.md](docs/json-schema.md)。
 | [docs/json-schema.md](docs/json-schema.md) | JSON 输出格式规范：顶层结构、section 类型、diagnosis 字段定义 |
 | [docs/collected_data.md](docs/collected_data.md) | 各模块 BPF 采集数据字典：map key/value、字段类型与来源 |
 | [docs/compat-matrix.md](docs/compat-matrix.md) | 多平台适配矩阵：x86_64/ARM64 × 内核 6.1/6.6/6.12 |
+| [docs/anomaly-detection.md](docs/anomaly-detection.md) | 异常检测方案：固定阈值 + 基线自适应双轨机制 |
+| [docs/correlate.md](docs/correlate.md) | 多维关联分析：跨模块规则引擎、关联规则与使用说明 |
 
 ## 脚本索引
 
