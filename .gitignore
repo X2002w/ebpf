@@ -13,6 +13,7 @@ demo/
 tags
 .*/
 !.github/
+.github/actions/
 ai_analysis/venv/
 ai_analysis/api.txt
 ai_analysis/__pycache__/

@@ -49,12 +49,25 @@ echo ""
 
 echo "[3] API 配置"
 check "api_config.json 存在" test -f "$AI_DIR/api_config.json"
-check "api.txt 存在 (本地 key)" test -f "$AI_DIR/api.txt"
-KEY_OK=false
+# api.txt 仅本地测试用，非必须
 if [ -f "$AI_DIR/api.txt" ]; then
+	echo "  [INFO] api.txt 存在 (本地测试密钥)"
+fi
+KEY_OK=false
+# 优先检查 api_config.json 中的 api_key
+if [ -f "$AI_DIR/api_config.json" ]; then
+	CFG_KEY=$(python3 -c "import json; f=open('$AI_DIR/api_config.json'); d=json.load(f); print(d.get('api_key',''))" 2>/dev/null || true)
+	if [ -n "$CFG_KEY" ] && [ "$CFG_KEY" != "sk-xxxxxxxx" ] && [ "$CFG_KEY" != "your-api-key" ] && [ "$CFG_KEY" != "sk-your-key" ]; then
+		echo "  [OK] api_config.json 有有效 key"
+		KEY_OK=true
+		((PASS++))
+	fi
+fi
+# 其次检查 api.txt（本地测试用，优先级更高）
+if [ "$KEY_OK" = false ] && [ -f "$AI_DIR/api.txt" ]; then
 	KEY=$(cat "$AI_DIR/api.txt" | tr -d '[:space:]')
 	if [ -n "$KEY" ] && [ "$KEY" != "sk-xxxxxxxx" ]; then
-		echo "  [OK] api.txt 有有效 key"
+		echo "  [OK] api.txt 有有效 key (本地测试)"
 		KEY_OK=true
 		((PASS++))
 	fi
@@ -63,7 +76,7 @@ if [ "$KEY_OK" = false ] && [ -n "$DEEPSEEK_API_KEY" ]; then
 	echo "  [OK] 使用环境变量 DEEPSEEK_API_KEY"
 	((PASS++))
 elif [ "$KEY_OK" = false ]; then
-	echo "  [WARN] 未检测到有效 API key (可设置 DEEPSEEK_API_KEY 或编辑 api.txt)"
+	echo "  [WARN] 未检测到有效 API key (编辑 ai_analysis/api_config.json 或设置 DEEPSEEK_API_KEY)"
 fi
 echo ""
 

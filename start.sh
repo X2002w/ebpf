@@ -131,7 +131,7 @@ fi
 if [ "$KEY_OK" = true ]; then
 	check_pass "API key"
 else
-	check_fail "API key 未配置 (编辑 ai_analysis/api_config.json 或创建 api.txt)"
+	check_fail "API key 未配置 (编辑 ai_analysis/api_config.json 或本地测试用 api.txt)"
 fi
 
 print_separator() {

@@ -91,10 +91,9 @@ PRICE_OUTPUT_PER_MTOK = float(_api_config.get("price_output_per_mtok", 0.0))
 _PLACEHOLDER_KEYS = {"sk-xxxxxxxx", "your-api-key", "sk-your-key"}
 if API_KEY in _PLACEHOLDER_KEYS or not API_KEY:
     print("[!] API key 未配置。任选一种方式：", file=sys.stderr)
-    print("    export DEEPSEEK_API_KEY=sk-your-key", file=sys.stderr)
-    print("    echo sk-your-key > api.txt              # 当前目录", file=sys.stderr)
-    print("    echo sk-your-key > ~/.eebpf/api.txt      # 用户目录", file=sys.stderr)
-    print("[!] 也可编辑 api_config.json 切换模型与后端", file=sys.stderr)
+    print("    编辑 ai_analysis/api_config.json 的 api_key 字段（推荐）", file=sys.stderr)
+    print("    或 export DEEPSEEK_API_KEY=sk-your-key", file=sys.stderr)
+    print("    本地测试: echo sk-your-key > ai_analysis/api.txt", file=sys.stderr)
 
 # DeepSeek 检测，仅对 DeepSeek 后端启用 thinking 参数
 _IS_DEEPSEEK = "deepseek" in BASE_URL

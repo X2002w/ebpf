@@ -10,16 +10,15 @@
 
 ## 快速开始
 
-### 方式一：Deb 包安装
+### 方式一：Deb/RPM 包安装
 
-从 [Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的 `.deb` 包：
+从 [Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的安装包。
+
+**Debian/Opebkylin (deb)**：
 
 ```bash
 # 安装
 sudo apt install ./eebpf_*_amd64.deb
-
-# 配置 API key (AI 诊断功能)
-echo "sk-your-key" > ~/.eebpf/api.txt
 
 # 运行（需要 root）
 sudo eebpf cpu -d 10
@@ -27,6 +26,36 @@ sudo eebpf-ai report/ -m cpu,mem
 ```
 
 卸载：`sudo apt remove eebpf`
+
+**RHEL/Centos (rpm)**：
+
+```bash
+# 安装
+sudo rpm -ivh eebpf-*.x86_64.rpm
+
+# 或使用 dnf/yum 自动处理依赖
+sudo dnf install ./eebpf-*.x86_64.rpm
+
+# 运行（需要 root）
+sudo eebpf cpu -d 10
+sudo eebpf-ai report/ -m cpu,mem
+```
+
+卸载：`sudo rpm -e eebpf`
+
+**配置 API key**（AI 诊断功能）：
+
+编辑 `ai_analysis/api_config.json`，将 `api_key` 字段替换为你的密钥：
+
+```json
+{
+    "api_key": "sk-your-key",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro"
+}
+```
+
+> 本地测试也可用 `echo "sk-your-key" > ai_analysis/api.txt`（gitignore 保护，优先级高于 json）。
 
 ### 方式二：源码构建
 
@@ -127,8 +156,8 @@ JSON 格式详见 [docs/json-schema.md](docs/json-schema.md)。
 # 初始化环境
 ./start.sh
 
-# 配置 API key
-echo "sk-your-key" > ai_analysis/api.txt(本地测试)
+# 配置 API key（编辑 api_config.json）
+# 或本地测试用: echo "sk-your-key" > ai_analysis/api.txt
 
 # 运行诊断
 ./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem,io

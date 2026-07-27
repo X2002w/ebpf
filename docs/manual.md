@@ -8,7 +8,7 @@ sudo ./eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与�
 
 ### 1.1 运行环境要求
 
-- 操作系统: openKylin, debian (或其他主流 Linux 发行版亦可)
+- 操作系统: openKylin, Debian, RHEL (或其他主流 Linux 发行版亦可)
 - 内核版本: 6.6+，需开启 `CONFIG_DEBUG_INFO_BTF`（存在 `/sys/kernel/btf/vmlinux`）
 - 硬件架构: x86_64 / ARM64（CI 测试），系统调用名映射通过 `__NR_*` 宏编译期适配架构
 - 运行权限: root (加载 BPF 程序、perf 采样均需要特权)
@@ -57,8 +57,37 @@ make          # 生成 ./eebpf
 sudo apt install ./eebpf_*_amd64.deb
 
 # 验证
-sudo ./eebpf --version
+sudo eebpf --version
 sudo eebpf cpu -d 10
+```
+
+卸载：
+
+```bash
+sudo apt remove eebpf         # 卸载包
+sudo apt purge eebpf          # 卸载并删除配置文件
+```
+
+### 1.6 RPM 包安装
+
+从 [GitHub Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的 `.rpm` 包：
+
+```bash
+# 安装 (dnf/yum 自动处理依赖)
+sudo dnf install ./eebpf-*.x86_64.rpm
+
+# 或直接使用 rpm
+sudo rpm -ivh eebpf-*.x86_64.rpm
+
+# 验证
+sudo eebpf --version
+sudo eebpf cpu -d 10
+```
+
+卸载：
+
+```bash
+sudo rpm -e eebpf              # 卸载包（保留配置文件）
 ```
 
 安装的文件布局：
@@ -70,14 +99,7 @@ sudo eebpf cpu -d 10
 | `/etc/eebpf.conf` | 系统级配置文件 |
 | `/usr/share/eebpf/ai_analysis/` | AI 诊断脚本与 prompt |
 
-卸载：
-
-```bash
-sudo apt remove eebpf         # 卸载包
-sudo apt purge eebpf          # 卸载并删除配置文件
-```
-
-### 1.6 容器化构建（openKylin 环境）
+### 1.7 容器化构建（openKylin 环境）
 
 ```bash
 ./enter-container.sh   # 构建镜像、启动容器并进入 /workspace
@@ -86,7 +108,7 @@ make                   # 容器内构建
 
 容器由 docker-compose 管理，已挂载宿主机必要目录；运行 BPF 程序需要特权容器。CI（GitHub Actions）会自动构建并发布最新构建/测试镜像。
 
-### 1.7 AI 诊断环境
+### 1.8 AI 诊断环境
 
 AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用大模型 API 对 eBPF 采集数据进行跨模块关联分析。
 
@@ -94,9 +116,9 @@ AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用
 # 初始化环境（首次）
 ./start.sh
 
-# 配置 API key（二选一）
-echo "sk-your-key" > ai_analysis/api.txt          # 本地测试，gitignore 保护
-# 或编辑 ai_analysis/api_config.json              # 公共配置模板
+# 配置 API key
+# 编辑 ai_analysis/api_config.json，将 api_key 改为你的密钥（推荐）
+# 本地测试也可用: echo "sk-your-key" > ai_analysis/api.txt
 
 # 运行 AI 诊断
 ./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem,io
@@ -111,9 +133,9 @@ echo "sk-your-key" > ai_analysis/api.txt          # 本地测试，gitignore 保
 | `--dry-run` | 仅打印 prompt，不调用 API |
 | `--no-thinking` | 隐藏模型思考过程 |
 
-API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt` > `ai_analysis/api_config.json` > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
+API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt`（本地测试） > `ai_analysis/api_config.json`（推荐用户编辑） > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
 
-### 1.8 运行配置文件
+### 1.9 运行配置文件
 
 sudo ./eebpf 支持通过 `eebpf.conf` 自定义运行时参数，无需每次在命令行指定。
 
@@ -165,7 +187,7 @@ lock_futex_crit_us = 20000
 
 命令行参数优先级高于配置文件。例如 `./eebpf cpu -i 3` 会忽略配置文件中的 `interval`，使用 3 秒间隔。
 
-### 1.9 AI 配置文件
+### 1.10 AI 配置文件
 
 AI 诊断模块使用三个配置文件，均支持多路径查找（`./` > `~/.eebpf/` > 安装目录）。
 
@@ -189,7 +211,7 @@ JSON 格式，配置 API 后端连接参数：
 
 #### api.txt
 
-纯文本格式，仅写入 API key（优先级高于 `api_config.json` 中的 `api_key`）：
+纯文本格式，仅写入 API key（本地测试用，gitignore 保护）。优先级高于 `api_config.json` 中的 `api_key`：
 
 ```
 sk-your-api-key-here
@@ -565,7 +587,7 @@ sudo ./eebpf correlate -w 30 -j           # ±30s 窗口，JSON 输出
 3. **符号解析精度有限**：调用栈地址通过 `/proc/<pid>/maps` 解析为"模块+偏移"，不解析 DWARF/符号表，无法直接给出函数名；进程退出后栈地址无法回溯（显示原始地址），进程名显示 `<exited>`。
 4. **短生命周期进程可能漏检**：统计按采样间隔批量读取，间隔内创建并退出的进程可能只留下部分指标，/proc 对账数据缺失。
 5. **观测开销**：`hot` 模块追踪全量系统调用，高负载下有可感知开销；cpu/lock 的 perf 栈采样频率越高开销越大，可用 `-p 0` 禁用。
-6. **阈值为静态配置**：异常判定阈值可通过 `eebpf.conf` 配置文件调整，详见 1.8 节。部分参数也可经命令行参数覆盖。
+6. **阈值为静态配置**：异常判定阈值可通过 `eebpf.conf` 配置文件调整，详见 1.9 节。部分参数也可经命令行参数覆盖。
 7. **设备热插拔**：I/O 模块对已移除设备的 map 残留做了主动清理，但采样间隔内移除的设备可能出现一次不完整统计。
 
 ---
