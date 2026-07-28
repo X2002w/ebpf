@@ -72,20 +72,41 @@ cp /usr/share/eebpf/ai_analysis/api_config.json ~/.eebpf/ai_analysis/
 
 ```bash
 git clone https://github.com/X2002w/eebpf.git && cd eebpf
-# 在拉取到源码后，建议tag到最新的标签
+# 拉取源码后建议 checkout 到最新 tag
+```
+
+**手动构建：**
+
+```bash
 ./start.sh                           # 环境检查 + 依赖安装
 make                                 # 构建
 sudo ./eebpf -v                      # 验证版本
 sudo ./eebpf cpu -d 10               # 运行
 ```
 
-### 方式三：一键部署
+**一键部署脚本：**
 
-> **先拉取远程仓库:** git clone git@github.com:X2002w/eebpf.git
 ```bash
-# 在项目根目录直接运行下述脚本(务必使用sudo)
 sudo ./scripts/setup.sh              # 依赖检查 → 构建 → 场景复现
 ```
+
+### 方式三：Docker 部署
+
+```bash
+git clone https://github.com/X2002w/eebpf.git && cd eebpf
+
+# 建议优先使用快捷脚本
+./enter-container.sh
+
+# 或者手动启动
+# 启动容器（需要 sudo，容器需要 privileged + BPF 权限）
+sudo docker compose build --pull && sudo docker compose up -d
+
+# 进入容器
+sudo docker compose exec openkylin bash -c "cd /workspace && exec bash"
+```
+
+> 容器内 `/workspace` 已挂载项目源码，可直接 `make` 构建并运行。
 
 ### 通用 CLI 参数
 
