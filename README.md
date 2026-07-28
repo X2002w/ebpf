@@ -1,8 +1,8 @@
 # eebpf — eBPF 系统异常观测与根因定位工具
 
-基于 eBPF (libbpf + BPF CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 5 类异常场景，输出结构化 Markdown 诊断报告 + JSON 结构化数据。
+基于 eBPF (libbpf + BPF CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 5 类异常场景，输出结构化 Markdown / JSON 诊断报告 + JSON 结构化数据。
 
-目标运行环境：openKylin / debian系, Kernel 6.6+, x86_64 / ARM64。
+目标运行环境：openKylin / debian系, x86_64 / ARM64。
 
 ## 用户手册
 
@@ -12,7 +12,7 @@
 
 ### 方式一：Deb/RPM 包安装
 
-从 [Releases](https://github.com/X2002w/ebpf/releases) 下载对应架构的安装包。
+从 [Releases](https://github.com/X2002w/ebpf/releases) 下载最新版本对应架构的安装包。
 
 **Debian/Opebkylin (deb)**：
 
@@ -25,7 +25,7 @@ sudo eebpf cpu -d 10
 sudo eebpf-ai report/ -m cpu,mem
 ```
 
-卸载：`sudo apt remove eebpf`
+> 卸载：`sudo apt remove eebpf`
 
 **RHEL/Centos (rpm)**：
 
@@ -41,11 +41,15 @@ sudo eebpf cpu -d 10
 sudo eebpf-ai report/ -m cpu,mem
 ```
 
-卸载：`sudo rpm -e eebpf`
+> 卸载：`sudo rpm -e eebpf`
 
 **配置 API key**（AI 诊断功能）：
 
-编辑 `ai_analysis/api_config.json`，将 `api_key` 字段替换为你的密钥：
+编辑 `/usr/share/eebpf/ai_analysis/api_config.json`，将 `api_key` 字段替换为你的密钥：
+
+```bash
+sudo vim /usr/share/eebpf/ai_analysis/api_config.json
+```
 
 ```json
 {
@@ -55,20 +59,31 @@ sudo eebpf-ai report/ -m cpu,mem
 }
 ```
 
+也可创建用户级配置（优先级高于系统级）：
+```bash
+mkdir -p ~/.eebpf/ai_analysis 
+cp /usr/share/eebpf/ai_analysis/api_config.json ~/.eebpf/ai_analysis/
+# 然后编辑 
+~/.eebpf/ai_analysis/api_config.json
+```
 > 本地测试也可用 `echo "sk-your-key" > ai_analysis/api.txt`（gitignore 保护，优先级高于 json）。
 
 ### 方式二：源码构建
 
 ```bash
-git clone https://github.com/X2002w/ebpf.git && cd ebpf
+git clone https://github.com/X2002w/eebpf.git && cd eebpf
+# 在拉取到源码后，建议tag到最新的标签
 ./start.sh                           # 环境检查 + 依赖安装
 make                                 # 构建
+sudo ./eebpf -v                      # 验证版本
 sudo ./eebpf cpu -d 10               # 运行
 ```
 
 ### 方式三：一键部署
 
+> **先拉取远程仓库:** git clone git@github.com:X2002w/eebpf.git
 ```bash
+# 在项目根目录直接运行下述脚本(务必使用sudo)
 sudo ./scripts/setup.sh              # 依赖检查 → 构建 → 场景复现
 ```
 
@@ -93,6 +108,41 @@ sudo ./scripts/setup.sh              # 依赖检查 → 构建 → 场景复现
 | `hot` | 系统调用热点分析（频率/耗时/错误率） |
 | `correlate` | 多维关联分析（跨模块规则引擎，时间窗口匹配） |
 | `history` | SQLite 历史趋势查询（基线/趋势/异常回溯） |
+
+### 使用示例
+
+```bash
+# 通用模板
+sudo eebpf <子命令> [-i <秒>] [-d <秒>] [-o <路径>] [-j]
+
+# CPU 异常检测
+sudo eebpf cpu -i <间隔> -d <时长> [-o <输出文件>] [-j]
+sudo eebpf cpu -i 3 -d 60 -o cpu_report.txt       # 实际示例
+
+# I/O 异常检测
+sudo eebpf io [-i <间隔>] [-d <时长>] [-j]
+sudo eebpf io -d 0 -j                              # 实际示例：持续运行 + JSON
+
+# 内存异常检测
+sudo eebpf mem [-i <间隔>] [-d <时长>] [-j]
+sudo eebpf mem -d 30                               # 实际示例
+
+# 锁竞争检测
+sudo eebpf lock [-i <间隔>] [-d <时长>] [-j]
+sudo eebpf lock -i 1 -d 0                          # 实际示例：每秒采样，持续运行
+
+# 系统调用热点分析
+sudo eebpf hot [-i <间隔>] [-d <时长>] [-o <输出文件>] [-j]
+sudo eebpf hot -d 120 -j -o hot_report.txt         # 实际示例
+
+# 多维关联分析
+sudo eebpf correlate [-m <模块列表>]
+sudo eebpf correlate -m cpu,mem,io                 # 实际示例
+
+# 历史趋势查询
+sudo eebpf history [-m <模块>] [-t <时间范围>]
+sudo eebpf history -m cpu -t 60                    # 实际示例
+```
 
 ### 配置文件
 
@@ -162,6 +212,8 @@ JSON 格式详见 [docs/json-schema.md](docs/json-schema.md)。
 # 或本地测试用: echo "sk-your-key" > ai_analysis/api.txt
 
 # 运行诊断
+# 在运行前，确保requestments里要求的python库以及下载,可自行选择py解释器，不一定
+# 必须得是下面这个路径(这个路径是在本地测试时创建的虚拟环境)
 ./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem,io
 ```
 
@@ -182,6 +234,10 @@ API 兼容 OpenAI 接口的任意后端（DeepSeek、通义千问等），编辑
 ### 自定义系统提示词
 
 编辑 `ai_analysis/system_prompt.md` 即可自定义发送给大模型的系统提示词，无需修改代码。`caller.py` 启动时自动加载该文件内容作为 system prompt，若文件不存在则使用内置简化版。
+
+安装后文件路径（与 `api_config.json` 相同）：
+- 系统级：`/usr/share/eebpf/ai_analysis/system_prompt.md`
+- 用户级（优先级更高）：`~/.eebpf/ai_analysis/system_prompt.md`
 
 可自定义的内容示例：
 - 调整报告输出语言和风格
@@ -239,7 +295,9 @@ GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md
 | **ARM64 Build** | push / PR | ARM64 原生构建 + 全模块冒烟测试 |
 | **Kernel Matrix** | push / PR | virtme-ng 启动 6.1 / 6.6 / 6.12 内核真实加载 BPF |
 | **Packaging Test** | push / PR | 打包 deb → apt 安装 → 冒烟测试 (amd64 + arm64) |
+| **Docker Publish** | push / PR | 构建 Docker 镜像并推送到 GHCR|
 | **Release** | tag `v*` | 构建 → 安装验证 → GitHub Release 自动发布 |
+| **Cleanup Old Packages** | 定期 | 自动清理过期构建产物与旧版本包 |
 
 ## TODO
 

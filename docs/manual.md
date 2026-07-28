@@ -36,7 +36,7 @@ sudo ./eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与�
 
 ### 1.4 本机构建
 
-- 拉取仓库代码(git clone git@github.com:X2002w/ebpf.git)
+- 拉取仓库代码(git clone git@github.com:X2002w/eebpf.git)
 - 在项目根目录执行下述命令
 
 ```bash
@@ -116,11 +116,11 @@ AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用
 # 初始化环境（首次）
 ./start.sh
 
-# 配置 API key
-# 编辑 ai_analysis/api_config.json，将 api_key 改为你的密钥（推荐）
+# 配置 API key（安装后路径: /usr/share/eebpf/ai_analysis/api_config.json）
+# 编辑配置文件，将 api_key 改为你的密钥（推荐）
 # 本地测试也可用: echo "sk-your-key" > ai_analysis/api.txt
 
-# 运行 AI 诊断
+# 运行 AI 诊断（安装后可直接使用 eebpf-ai 命令）
 ./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m cpu,mem,io
 ./ai_analysis/venv/bin/python ai_analysis/caller.py report/ -m hot,lock
 ```
@@ -133,7 +133,7 @@ AI 诊断模块 (`ai_analysis/`) 独立于 C 构建流程，使用 Python 调用
 | `--dry-run` | 仅打印 prompt，不调用 API |
 | `--no-thinking` | 隐藏模型思考过程 |
 
-API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `ai_analysis/api.txt`（本地测试） > `ai_analysis/api_config.json`（推荐用户编辑） > 内置默认值。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
+API 配置优先级：环境变量 `DEEPSEEK_API_KEY` > `api.txt` > `api_config.json` > 内置默认值。配置文件查找路径（优先级从高到低）：`./ai_analysis/` > `./` > `~/.eebpf/ai_analysis/` > `~/.config/eebpf/` > `/usr/share/eebpf/ai_analysis/`。支持兼容 OpenAI 接口的任意后端（如 DeepSeek、通义千问、本地模型），编辑 `api_config.json` 中的 `base_url` 和 `model` 即可切换。
 
 ### 1.9 运行配置文件
 

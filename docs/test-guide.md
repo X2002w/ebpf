@@ -14,7 +14,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/X2002w/ebpf.git && cd ebpf
+git clone https://github.com/X2002w/eebpf.git && cd eebpf
 
 # 一键部署 — 安装依赖 → 构建 → 场景复现
 sudo ./scripts/setup.sh
