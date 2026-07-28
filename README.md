@@ -320,6 +320,10 @@ GitHub Actions 自动化构建、测试与发布（详见 [docs/compat-matrix.md
 | **Release** | tag `v*` | 构建 → 安装验证 → GitHub Release 自动发布 |
 | **Cleanup Old Packages** | 定期 | 自动清理过期构建产物与旧版本包 |
 
+## License
+
+待定。deb/RPM 打包控制文件声明 GPL-2.0 许可证，其余源码部分尚未确定最终许可证。
+
 ## TODO
 
 - [x] CPU 异常占用或调度延迟
