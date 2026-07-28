@@ -1,6 +1,6 @@
 # eebpf 用户手册
 
-sudo ./eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 CPU、I/O、内存、锁竞争、系统调用热点 5 类异常场景，输出结构化诊断报告。
+eebpf 是基于 eBPF (libbpf + CO-RE) 的轻量级系统异常观测与根因定位工具，覆盖 CPU、I/O、内存、锁竞争、系统调用热点 5 类异常场景，输出结构化诊断报告。
 
 ---
 
@@ -101,12 +101,26 @@ sudo rpm -e eebpf              # 卸载包（保留配置文件）
 
 ### 1.7 容器化构建（openKylin 环境）
 
+> 使用容器化构建前，本机需已安装 Docker 及 Docker Compose。
+
 ```bash
-./enter-container.sh   # 构建镜像、启动容器并进入 /workspace
+# 验证安装
+sudo doker -v
+sudo docker compose version
+```
+项目基于 openKylin 官方镜像（`docker.io/openkylin/openkylin:2.0`）自行构建了两层容器镜像：
+
+- **build 镜像**：在官方镜像基础上安装编译工具链，从源码构建 bpftool，用于 eebpf 的编译构建。
+- **test 镜像**：在 build 镜像基础上进一步集成 stress-ng、fio 等测试工具，用于端到端测试。
+
+CI（GitHub Actions）在每次提交时自动构建并发布最新的 build/test 镜像至 GHCR（GitHub Container Registry），本地开发环境可直接拉取使用。
+
+```bash
+./enter-container.sh   # 拉取最新测试镜像、启动特权容器并进入 /workspace
 make                   # 容器内构建
 ```
 
-容器由 docker-compose 管理，已挂载宿主机必要目录；运行 BPF 程序需要特权容器。CI（GitHub Actions）会自动构建并发布最新构建/测试镜像。
+容器由 docker-compose 管理，已挂载宿主机必要目录（debugfs、tracefs 等）；运行 BPF 程序需要特权模式。
 
 ### 1.8 AI 诊断环境
 
@@ -535,24 +549,9 @@ sudo ./eebpf correlate -w 30 -j           # ±30s 窗口，JSON 输出
 
 ### 4.1 总体架构
 
-```
-┌────────────────────────── 用户态 ───────────────────────────┐
-│ main.c 子命令分发                                            │
-│   ├─ cpu_anomaly.c ─┐                                       │
-│   ├─ io_anomaly.c   │  周期性读取 BPF map → 聚合/阈值判定     │
-│   ├─ mem_anomaly.c  ├─ → 根因分析 → 诊断报告                 │
-│   ├─ lock_anomaly.c │     (stdout / Markdown / JSON)        │
-│   └─ syscall_anomaly.c ┘                                    │
-├─────────────────────────────────────────────────────────────┤
-│ ai_analysis/ (Python)                                       │
-│   caller.py → 读取 JSON → 调用 LLM → 跨模块关联诊断报告        │
-└──────────────────────────┬──────────────────────────────────┘
-                    BPF map（内核态聚合统计）
-┌──────────────────────────┴───────────── 内核态 ─────────────┐
-│ *.bpf.c：tracepoint / kprobe / perf event 挂载点             │
-│ sched_switch、block_rq_*、page_fault、futex、sys_enter/exit  │
-└──────────────────────────────────────────────────────────────┘
-```
+- eebpf 采用用户态与内核态协作的架构。内核态由一系列 BPF 程序（`*.bpf.c`）组成，挂载在 `sched_switch`、`block_rq_*`、`page_fault`、`futex`、`sys_enter/sys_exit` 等 tracepoint、kprobe 和 perf event 挂载点上，负责在内核上下文中捕获异常事件并按进程、设备、系统调用号等维度在 BPF map 中做聚合统计。
+
+- 用户态以 `main.c` 作为统一入口进行子命令分发，各模块（`cpu_anomaly.c`、`io_anomaly.c`、`mem_anomaly.c`、`lock_anomaly.c`、`syscall_anomaly.c`）周期性从 BPF map 中批量读取统计数据，经聚合计算与阈值比对后完成根因分析，最终以纯文本、Markdown 或 JSON 格式输出诊断报告。此外，`ai_analysis/` 目录下的 Python 脚本（`caller.py`）可读取各模块输出的 JSON 报告，调用 LLM 进行跨模块关联分析，生成综合诊断结论。
 
 - **CO-RE (Compile Once, Run Everywhere)**：基于内核 BTF 生成 `vmlinux.h`，BPF 程序一次编译可跨内核版本运行，无需目标机器安装内核头文件。
 - **内核态聚合**：统计在 BPF map 中按 PID/设备/系统调用号等维度累加，用户态按采样间隔批量读取并清零，避免每事件上报的开销。
